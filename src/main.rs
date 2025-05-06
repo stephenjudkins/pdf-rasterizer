@@ -1,7 +1,10 @@
 use eyre::{Result, bail, eyre};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use std::{env, process};
+use std::{
+    env,
+    process::{self, ExitCode},
+};
 use std::{fs::File, io::Read};
 
 use femtovg::Color;
@@ -160,12 +163,13 @@ fn go(path: &String, scale: f32) -> Result<()> {
     }
 }
 
-fn main() {
+fn main() -> Result<ExitCode> {
     let mut args = env::args().skip(1);
     if let Some(file) = args.next() {
-        go(&file, DEFAULT_SCALE).unwrap();
+        go(&file, DEFAULT_SCALE)?;
+        Ok(ExitCode::SUCCESS)
     } else {
         eprintln!("Usage: [filename]");
-        process::exit(1);
+        Ok(ExitCode::FAILURE)
     }
 }
