@@ -1,4 +1,4 @@
-use eyre::{Result, bail, eyre};
+use eyre::{Result, WrapErr, bail, eyre};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::{
@@ -46,7 +46,7 @@ impl AppRenderer {
         let frame = self
             .surface
             .get_current_texture()
-            .expect("unable to get next texture from swapchain");
+            .wrap_err_with(|| eyre!("unable to get next texture from swapchain"))?;
         let commands = canvas.flush_to_surface(&frame.texture);
 
         self.queue.submit(Some(commands));
