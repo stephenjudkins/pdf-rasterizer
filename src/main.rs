@@ -131,7 +131,7 @@ impl ApplicationHandler for App {
 
 const PAGE: u32 = 1;
 
-const DEFAULT_SCALE: f32 = 2.75;
+const DEFAULT_SCALE: f32 = 3.0;
 
 fn go(path: &str, scale: f32) -> Result<()> {
     let bytes = fs::read(path)?;

@@ -3,8 +3,9 @@ use std::{collections::HashMap, fmt::Debug, rc::Rc};
 
 use eyre::{Result, bail, eyre};
 use femtovg::{
-    Canvas, Color, ImageFlags, ImageSource, Paint, Path, Renderer,
+    Canvas, Color, ImageFlags, ImageSource, Paint, Path, Renderer, Solidity,
     img::{DynamicImage, Rgba},
+    rgb,
 };
 use lopdf::{Dictionary, Document, Object, ObjectId, content::Content};
 use rusttype::Scale;
@@ -112,24 +113,11 @@ pub struct TextMatrix {
     pub f: i64,
 }
 
-impl Default for TextMatrix {
-    fn default() -> Self {
-        Self {
-            a: 1,
-            b: 0,
-            c: 0,
-            d: 1,
-            e: 0,
-            f: 0,
-        }
-    }
-}
-
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct TextState<'a> {
     pub position: f32,
     pub size: f32,
-    pub matrix: TextMatrix,
+    pub matrix: CTM,
     pub font: Option<Rc<Font<'a>>>,
 }
 
@@ -139,13 +127,13 @@ pub struct Coord {
     pub y: f32,
 }
 
-pub fn transform(xy: &Coord, ctm: &CTM) -> Coord {
+pub fn transform(xy: &Coord, ctm: &CTM, scale: &DeviceScale) -> Coord {
     let CTM { a, b, c, d, e, f } = ctm;
     let Coord { x, y } = xy;
 
     Coord {
-        x: a * x + c * y + e,
-        y: b * x + d * y + f,
+        x: scale.scale * (a * x + c * y + e),
+        y: scale.height as f32 - (scale.scale * (b * x + d * y + f)),
     }
 }
 
@@ -169,6 +157,7 @@ pub struct CTM {
     pub e: f32,
     pub f: f32,
 }
+
 impl Default for CTM {
     fn default() -> Self {
         Self {
@@ -195,33 +184,37 @@ impl Debug for CTM {
 }
 
 #[derive(Clone, Debug)]
-pub struct GraphicsState {
+pub struct GraphicsState<'a> {
     pub ctm: CTM,
     pub stroke_color: Color,
     pub non_stroke_color: Color,
+    pub path: Path,
+    pub text_state: Option<TextState<'a>>,
+    pub line_width: f32,
 }
 
-impl Default for GraphicsState {
+impl Default for GraphicsState<'_> {
     fn default() -> Self {
         Self {
             ctm: Default::default(),
             stroke_color: Color::black(),
             non_stroke_color: Color::black(),
+            path: Path::new(),
+            text_state: None,
+            line_width: 1.,
         }
     }
 }
 
 #[derive(Debug)]
 pub struct State<'a> {
-    pub graphics_state: Vec<GraphicsState>,
-    pub text_state: Option<TextState<'a>>,
+    pub graphics_state: Vec<GraphicsState<'a>>,
 }
 
 impl Default for State<'_> {
     fn default() -> Self {
         Self {
             graphics_state: vec![Default::default()],
-            text_state: Default::default(),
         }
     }
 }
@@ -229,12 +222,15 @@ impl Default for State<'_> {
 const TEXT_SCALE: f32 = 1000.;
 
 pub fn draw_text<T: Renderer>(
-    scale: f32,
+    scale: &DeviceScale,
     canvas: &mut Canvas<T>,
-    ts: &mut TextState,
-    gs: &mut &GraphicsState,
+    gs: &mut GraphicsState,
     glyphs: &[Object],
 ) -> Result<()> {
+    let ts = gs
+        .text_state
+        .as_mut()
+        .ok_or_else(|| eyre!("no font state"))?;
     let font = ts.font.as_ref().ok_or_else(|| eyre!("no font sent"))?;
 
     for glyph in glyphs {
@@ -251,15 +247,18 @@ pub fn draw_text<T: Renderer>(
                             x: ts.position / TEXT_SCALE * ts.size,
                             y: 0.,
                         },
-                        &gs.ctm,
+                        &ts.matrix,
+                        scale,
                     );
+
                     let width: f32 = *font.widths.get(glyph_id as usize).unwrap_or(&0.);
                     ts.position += width;
 
                     let glyph = font
                         .font
                         .glyph(rusttype::GlyphId(glyph_id))
-                        .scaled(Scale::uniform(ts.size * scale));
+                        .scaled(Scale::uniform(ts.size * scale.scale));
+
                     let positioned = glyph.positioned(rusttype::point(0., 0.));
 
                     match positioned.pixel_bounding_box() {
@@ -269,20 +268,24 @@ pub fn draw_text<T: Renderer>(
                                 metrics.height() as u32,
                             )
                             .to_rgba8();
-
+                            let Color { r, g, b, a: _ } = gs.non_stroke_color;
                             positioned.draw(|x, y, v| {
-                                let Color { r, g, b, a: _ } = gs.non_stroke_color;
                                 image.put_pixel(
                                     x as u32,
                                     y as u32,
-                                    Rgba([r as u8, g as u8, b as u8, (v * 255.) as u8]),
+                                    Rgba([
+                                        (r * 255.) as u8,
+                                        (g * 255.) as u8,
+                                        (b * 255.) as u8,
+                                        (v * 255.) as u8,
+                                    ]),
                                 )
                             });
 
                             let w = metrics.width() as f32;
                             let h = metrics.height() as f32;
-                            let x0 = x * scale + (metrics.min.x as f32);
-                            let y0 = 0.0 - (y * scale) + (metrics.min.y as f32);
+                            let x0 = x + (metrics.min.x as f32);
+                            let y0 = y + (metrics.min.y as f32);
                             let image_id = canvas.create_image(
                                 ImageSource::try_from(&DynamicImage::from(image))?,
                                 ImageFlags::REPEAT_Y,
@@ -297,7 +300,6 @@ pub fn draw_text<T: Renderer>(
                                 1.0,
                             );
                             let mut path = Path::new();
-
                             path.rect(x0, y0, w, h);
                             canvas.fill_path(&path, &img_paint);
                         }
@@ -309,8 +311,6 @@ pub fn draw_text<T: Renderer>(
             _ => (),
         }
     }
-
-    canvas.reset();
 
     Ok(())
 }
@@ -330,9 +330,9 @@ pub fn dimensions(page: &Dictionary) -> Result<(u32, u32)> {
     }
 }
 
-fn alter_gfx_state<F>(state: &mut State, f: F) -> Result<()>
+fn alter_gfx_state<F, A>(state: &mut State, mut f: F) -> Result<A>
 where
-    F: Fn(&mut GraphicsState) -> Result<()>,
+    F: FnMut(&mut GraphicsState) -> Result<A>,
 {
     let gs = state
         .graphics_state
@@ -342,6 +342,15 @@ where
     f(gs)
 }
 
+pub struct DeviceScale {
+    height: u32,
+    scale: f32,
+}
+
+fn to_color(r: &Object, g: &Object, b: &Object) -> Result<Color> {
+    Ok(Color::rgbf(r.as_float()?, g.as_float()?, b.as_float()?))
+}
+
 pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) -> Result<()> {
     let page_id = doc
         .get_pages()
@@ -349,7 +358,11 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
         .ok_or_else(|| eyre!("No such page"))?
         .clone();
     let size: (u32, u32) = dimensions(doc.get_dictionary(page_id)?)?;
-    let scale = canvas.width() as f32 / size.0 as f32;
+    let scale = DeviceScale {
+        height: canvas.height(),
+        scale: canvas.width() as f32 / size.0 as f32,
+    };
+
     let fonts = doc.get_page_fonts(page_id)?;
 
     let font_map_result: Result<HashMap<Vec<u8>, Rc<Font>>> = fonts
@@ -367,64 +380,74 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
 
     let mut state = State::default();
 
+    let mut tp = Path::new();
+    tp.move_to(100., 100.);
+    tp.line_to(200., 200.);
+    canvas.stroke_path(&tp, &Paint::color(Color::black()));
+
     for op in content.operations {
         match (op.operator.as_str(), &op.operands[..]) {
             ("BT", []) => {
-                state.text_state = Some(TextState::default());
+                alter_gfx_state(&mut state, |gs| {
+                    gs.text_state = Some(TextState::default());
+                    Ok(())
+                })?;
             }
-            (
-                "Tm",
-                [
-                    Object::Integer(a),
-                    Object::Integer(b),
-                    Object::Integer(c),
-                    Object::Integer(d),
-                    Object::Integer(e),
-                    Object::Integer(f),
-                ],
-            ) => match &mut state.text_state {
-                Some(ts) => {
-                    ts.matrix = TextMatrix {
-                        a: *a,
-                        b: *b,
-                        c: *c,
-                        d: *d,
-                        e: *e,
-                        f: *f,
+            ("Tm", [a, b, c, d, e, f]) => {
+                alter_gfx_state(&mut state, |gs| {
+                    gs.text_state = Some(TextState::default());
+                    match &mut gs.text_state {
+                        Some(ts) => {
+                            let tm = CTM {
+                                a: a.as_float()?,
+                                b: b.as_float()?,
+                                c: c.as_float()?,
+                                d: d.as_float()?,
+                                e: e.as_float()?,
+                                f: f.as_float()?,
+                            };
+
+                            ts.matrix = concat(&gs.ctm, &tm);
+                        }
+                        _ => (),
                     }
+
+                    Ok(())
+                })?;
+            }
+            ("Tf", [Object::Name(n), size]) => alter_gfx_state(&mut state, |gs| {
+                match font_map.get(n) {
+                    Some(font) => match &mut gs.text_state {
+                        Some(ts) => {
+                            ts.font = Some(font.clone());
+                            ts.size = size.as_float().unwrap();
+                        }
+                        _ => (),
+                    },
+                    None => (),
                 }
-                _ => (),
-            },
-            ("Tf", [Object::Name(n), size]) => match font_map.get(n) {
-                Some(font) => match &mut state.text_state {
-                    Some(ts) => {
-                        ts.font = Some(font.clone());
-                        ts.size = size.as_float().unwrap();
-                    }
-                    _ => (),
-                },
-                None => (),
-            },
-            ("TJ", [text]) => match &mut state.text_state {
-                Some(ts) => match &mut state.graphics_state.last() {
-                    Some(gs) => {
-                        draw_text(scale, canvas, ts, gs, text.as_array()?)?;
-                    }
-                    _ => (),
-                },
-                _ => (),
-            },
+                Ok(())
+            })?,
+
+            ("TJ", [text]) => alter_gfx_state(&mut state, |gs| {
+                draw_text(&scale, canvas, gs, text.as_array()?)?;
+                Ok(())
+            })?,
             ("ET", []) => {
-                state.text_state = None;
+                alter_gfx_state(&mut state, |gs| {
+                    gs.text_state = None;
+
+                    Ok(())
+                })?;
             }
-            ("cm", [a0, b0, c0, d0, e0, f0]) => {
+            ("cm", [a, b, c, d, e, f]) => {
                 let ctm = CTM {
-                    a: a0.as_float().unwrap(),
-                    b: b0.as_float().unwrap(),
-                    c: c0.as_float().unwrap(),
-                    d: d0.as_float().unwrap(),
-                    e: e0.as_float().unwrap(),
-                    f: f0.as_float().unwrap(),
+                    a: a.as_float()?,
+                    b: b.as_float()?,
+                    c: c.as_float()?,
+                    d: d.as_float()?,
+                    e: e.as_float()?,
+                    f: f.as_float()?,
                 };
 
                 alter_gfx_state(&mut state, |gs| {
@@ -445,24 +468,120 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
             }
             ("scn", [r, g, b]) => {
                 alter_gfx_state(&mut state, |gs| {
-                    gs.non_stroke_color = Color::rgbf(
-                        r.as_float()? * 255.,
-                        g.as_float()? * 255.,
-                        b.as_float()? * 255.,
-                    );
+                    gs.non_stroke_color = to_color(r, g, b)?;
                     Ok(())
                 })?;
             }
             ("SCN", [r, g, b]) => {
                 alter_gfx_state(&mut state, |gs| {
-                    gs.stroke_color = Color::rgbf(
-                        r.as_float()? * 255.,
-                        g.as_float()? * 255.,
-                        b.as_float()? * 255.,
-                    );
+                    gs.stroke_color = to_color(r, g, b)?;
                     Ok(())
                 })?;
             }
+            ("m", [x, y]) => {
+                alter_gfx_state(&mut state, |gs| {
+                    let xy = transform(
+                        &Coord {
+                            x: x.as_float()?,
+                            y: y.as_float()?,
+                        },
+                        &gs.ctm,
+                        &scale,
+                    );
+                    gs.path.move_to(xy.x, xy.y);
+                    Ok(())
+                })?;
+            }
+            ("l", [x, y]) => {
+                alter_gfx_state(&mut state, |gs| {
+                    let xy = transform(
+                        &Coord {
+                            x: x.as_float()?,
+                            y: y.as_float()?,
+                        },
+                        &gs.ctm,
+                        &scale,
+                    );
+                    gs.path.line_to(xy.x, xy.y);
+                    Ok(())
+                })?;
+            }
+            ("c", [x1, y1, x2, y2, x3, y3]) => {
+                alter_gfx_state(&mut state, |gs| {
+                    let xy1 = transform(
+                        &Coord {
+                            x: x1.as_float()?,
+                            y: y1.as_float()?,
+                        },
+                        &gs.ctm,
+                        &scale,
+                    );
+                    let xy2 = transform(
+                        &Coord {
+                            x: x2.as_float()?,
+                            y: y2.as_float()?,
+                        },
+                        &gs.ctm,
+                        &scale,
+                    );
+                    let xy3 = transform(
+                        &Coord {
+                            x: x3.as_float()?,
+                            y: y3.as_float()?,
+                        },
+                        &gs.ctm,
+                        &scale,
+                    );
+                    gs.path.bezier_to(xy1.x, xy1.y, xy2.x, xy2.y, xy3.x, xy3.y);
+                    Ok(())
+                })?;
+            }
+            ("re", [xo, yo, wo, ho]) => {
+                alter_gfx_state(&mut state, |gs| {
+                    let x = xo.as_float()?;
+                    let y = yo.as_float()?;
+                    let w = wo.as_float()?;
+                    let h = ho.as_float()?;
+                    let xy0 = transform(&Coord { x, y }, &gs.ctm, &scale);
+                    let xy1 = transform(&Coord { x: x + w, y: y + h }, &gs.ctm, &scale);
+                    let wh = Coord {
+                        x: xy1.x - xy0.x,
+                        y: xy1.y - xy0.y,
+                    };
+                    gs.path.rect(xy0.x, xy0.y, wh.x, wh.y);
+                    Ok(())
+                })?;
+            }
+            ("h", []) => {
+                alter_gfx_state(&mut state, |gs| {
+                    gs.path.close();
+                    Ok(())
+                })?;
+            }
+            ("f", []) => {
+                alter_gfx_state(&mut state, |gs| {
+                    canvas.fill_path(&gs.path, &Paint::color(gs.non_stroke_color));
+                    gs.path = Path::new();
+                    Ok(())
+                })?;
+            }
+            ("w", [lw]) => {
+                alter_gfx_state(&mut state, |gs| {
+                    gs.line_width = lw.as_float()?;
+                    Ok(())
+                })?;
+            }
+            ("W", []) => {
+                alter_gfx_state(&mut state, |gs| {
+                    canvas.stroke_path(
+                        &gs.path,
+                        &Paint::color(gs.stroke_color).with_line_width(gs.line_width * scale.scale),
+                    );
+                    gs.path = Path::new();
+                    Ok(())
+                })?;
+            }
+
             (o, a) => {
                 eprintln!("op: {:?} {:?}", o, a);
             }
