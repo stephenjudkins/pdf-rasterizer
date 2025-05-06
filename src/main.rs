@@ -1,4 +1,4 @@
-use eyre::{Result, WrapErr, bail, eyre};
+use eyre::{Result, WrapErr, eyre};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::{

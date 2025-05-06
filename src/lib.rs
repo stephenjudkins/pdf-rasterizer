@@ -3,7 +3,7 @@ use std::{collections::HashMap, fmt::Debug, rc::Rc};
 
 use eyre::{Result, bail, eyre};
 use femtovg::{
-    Canvas, ImageFlags, ImageSource, Paint, Path, Renderer,
+    Canvas, Color, ImageFlags, ImageSource, Paint, Path, Renderer,
     img::{DynamicImage, Rgba},
 };
 use lopdf::{Dictionary, Document, Object, ObjectId, content::Content};
@@ -194,9 +194,21 @@ impl Debug for CTM {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct GraphicsState {
     pub ctm: CTM,
+    pub stroke_color: Color,
+    pub non_stroke_color: Color,
+}
+
+impl Default for GraphicsState {
+    fn default() -> Self {
+        Self {
+            ctm: Default::default(),
+            stroke_color: Color::black(),
+            non_stroke_color: Color::black(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -259,8 +271,12 @@ pub fn draw_text<T: Renderer>(
                             .to_rgba8();
 
                             positioned.draw(|x, y, v| {
-                                let p = 255 - ((v * 255.0) as u8);
-                                image.put_pixel(x as u32, y as u32, Rgba([p, p, p, 255 - p]))
+                                let Color { r, g, b, a: _ } = gs.non_stroke_color;
+                                image.put_pixel(
+                                    x as u32,
+                                    y as u32,
+                                    Rgba([r as u8, g as u8, b as u8, (v * 255.) as u8]),
+                                )
                             });
 
                             let w = metrics.width() as f32;
@@ -312,6 +328,18 @@ pub fn dimensions(page: &Dictionary) -> Result<(u32, u32)> {
         },
         other => bail!("Expected [0 0 w h], but {:?}", other),
     }
+}
+
+fn alter_gfx_state<F>(state: &mut State, f: F) -> Result<()>
+where
+    F: Fn(&mut GraphicsState) -> Result<()>,
+{
+    let gs = state
+        .graphics_state
+        .last_mut()
+        .ok_or(eyre!("empty graphics stack"))?;
+
+    f(gs)
 }
 
 pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) -> Result<()> {
@@ -399,14 +427,12 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
                     f: f0.as_float().unwrap(),
                 };
 
-                let gs = state
-                    .graphics_state
-                    .last_mut()
-                    .ok_or_else(|| eyre!("empty graphics stack"))?;
-
-                let next = concat(&gs.ctm, &ctm);
-                gs.ctm = next
+                alter_gfx_state(&mut state, |gs| {
+                    gs.ctm = concat(&gs.ctm, &ctm);
+                    Ok(())
+                })?;
             }
+
             ("q", []) => {
                 let gs = state.graphics_state.last().cloned().unwrap_or_default();
                 state.graphics_state.push(gs);
@@ -417,7 +443,29 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
                     .pop()
                     .ok_or_else(|| eyre!("Popped empty graphics stack"))?;
             }
-            _ => (),
+            ("scn", [r, g, b]) => {
+                alter_gfx_state(&mut state, |gs| {
+                    gs.non_stroke_color = Color::rgbf(
+                        r.as_float()? * 255.,
+                        g.as_float()? * 255.,
+                        b.as_float()? * 255.,
+                    );
+                    Ok(())
+                })?;
+            }
+            ("SCN", [r, g, b]) => {
+                alter_gfx_state(&mut state, |gs| {
+                    gs.stroke_color = Color::rgbf(
+                        r.as_float()? * 255.,
+                        g.as_float()? * 255.,
+                        b.as_float()? * 255.,
+                    );
+                    Ok(())
+                })?;
+            }
+            (o, a) => {
+                eprintln!("op: {:?} {:?}", o, a);
+            }
         }
     }
 
