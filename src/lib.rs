@@ -81,7 +81,8 @@ impl<'a> FromPDF for Font<'a> {
 
         let content: Vec<u8> = get(doc, descriptor.get(b"FontFile2")?)?;
 
-        let font = rusttype::Font::try_from_vec(content).ok_or(eyre!("could not load font"))?;
+        let font =
+            rusttype::Font::try_from_vec(content).ok_or_else(|| eyre!("could not load font"))?;
 
         let name = get(doc, descriptor.get(b"FontName")?)?;
 
@@ -225,25 +226,24 @@ impl Default for State<'_> {
     }
 }
 
-static TEXT_SCALE: f32 = 1000.;
+const TEXT_SCALE: f32 = 1000.;
 
 pub fn draw_text<T: Renderer>(
     scale: f32,
     canvas: &mut Canvas<T>,
     ts: &mut TextState,
     gs: &mut &GraphicsState,
-    glyphs: &Vec<Object>,
+    glyphs: &[Object],
 ) -> Result<()> {
-    let font = ts.font.as_ref().ok_or(eyre!("no font sent"))?;
+    let font = ts.font.as_ref().ok_or_else(|| eyre!("no font sent"))?;
 
     for glyph in glyphs {
         match glyph {
             Object::String(bytes, _) => {
-                let glyph_ids: Vec<u16> = bytes
+                let glyph_ids = bytes
                     .chunks_exact(2)
                     .into_iter()
-                    .map(|b| u16::from_be_bytes([b[0], b[1]]))
-                    .collect();
+                    .map(|b| u16::from_be_bytes([b[0], b[1]]));
 
                 for glyph_id in glyph_ids {
                     let Coord { x, y } = transform(
@@ -346,7 +346,7 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
     let page_id = doc
         .get_pages()
         .get(&page)
-        .ok_or(eyre!("No such page"))?
+        .ok_or_else(|| eyre!("No such page"))?
         .clone();
     let size: (u32, u32) = dimensions(doc.get_dictionary(page_id)?)?;
     let scale = canvas.width() as f32 / size.0 as f32;
@@ -441,7 +441,7 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
                 state
                     .graphics_state
                     .pop()
-                    .ok_or(eyre!("Popped empty graphics stack"))?;
+                    .ok_or_else(|| eyre!("Popped empty graphics stack"))?;
             }
             ("scn", [r, g, b]) => {
                 alter_gfx_state(&mut state, |gs| {
