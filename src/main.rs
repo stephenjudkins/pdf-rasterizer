@@ -161,14 +161,11 @@ fn go(path: &String, scale: f32) -> Result<()> {
 }
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    match &args[..] {
-        [_, file] => {
-            go(&file, DEFAULT_SCALE).unwrap();
-        }
-        _ => {
-            eprintln!("Usage: [filename]");
-            process::exit(1);
-        }
+    let mut args = env::args().skip(1);
+    if let Some(file) = args.next() {
+        go(&file, DEFAULT_SCALE).unwrap();
+    } else {
+        eprintln!("Usage: [filename]");
+        process::exit(1);
     }
 }
