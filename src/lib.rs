@@ -81,7 +81,8 @@ impl<'a> FromPDF for Font<'a> {
 
         let content: Vec<u8> = get(doc, descriptor.get(b"FontFile2")?)?;
 
-        let font = rusttype::Font::try_from_vec(content).ok_or(eyre!("could not load font"))?;
+        let font =
+            rusttype::Font::try_from_vec(content).ok_or_else(|| eyre!("could not load font"))?;
 
         let name = get(doc, descriptor.get(b"FontName")?)?;
 
@@ -222,7 +223,7 @@ pub fn draw_text<T: Renderer>(
     gs: &mut &GraphicsState,
     glyphs: &[Object],
 ) -> Result<()> {
-    let font = ts.font.as_ref().ok_or(eyre!("no font sent"))?;
+    let font = ts.font.as_ref().ok_or_else(|| eyre!("no font sent"))?;
 
     for glyph in glyphs {
         match glyph {
@@ -318,7 +319,7 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
     let page_id = doc
         .get_pages()
         .get(&page)
-        .ok_or(eyre!("No such page"))?
+        .ok_or_else(|| eyre!("No such page"))?
         .clone();
     let size: (u32, u32) = dimensions(doc.get_dictionary(page_id)?)?;
     let scale = canvas.width() as f32 / size.0 as f32;
@@ -402,7 +403,7 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
                 let gs = state
                     .graphics_state
                     .last_mut()
-                    .ok_or(eyre!("empty graphics stack"))?;
+                    .ok_or_else(|| eyre!("empty graphics stack"))?;
 
                 let next = concat(&gs.ctm, &ctm);
                 gs.ctm = next
@@ -415,7 +416,7 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
                 state
                     .graphics_state
                     .pop()
-                    .ok_or(eyre!("Popped empty graphics stack"))?;
+                    .ok_or_else(|| eyre!("Popped empty graphics stack"))?;
             }
             _ => (),
         }
