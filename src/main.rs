@@ -1,3 +1,4 @@
+use eyre::{Result, bail, eyre};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::{env, process};
@@ -31,7 +32,7 @@ impl AppRenderer {
         let canvas = &mut self.canvas;
         canvas.set_size(size.width, size.height, self.window.scale_factor() as f32);
         canvas.clear_rect(0, 0, size.width, size.height, Color::white());
-        draw_doc(doc, canvas, PAGE);
+        draw_doc(doc, canvas, PAGE).unwrap();
 
         // canvas.fill_text(x, y, text, paint)
         canvas.save();
@@ -127,28 +128,32 @@ static PAGE: u32 = 1;
 
 static DEFAULT_SCALE: f32 = 2.75;
 
-fn go(path: &String, scale: f32) {
-    let mut file = File::open(path).unwrap();
+fn go(path: &String, scale: f32) -> Result<()> {
+    let mut file = File::open(path)?;
     let mut buf = Vec::new();
-    file.read_to_end(&mut buf).unwrap();
-    let doc = Document::load_mem(&buf).unwrap();
+    file.read_to_end(&mut buf)?;
+    let doc = Document::load_mem(&buf)?;
 
-    let page_id = doc.get_pages().get(&PAGE).unwrap().clone();
+    let page_id = doc
+        .get_pages()
+        .get(&PAGE)
+        .ok_or(eyre!("expected page"))?
+        .clone();
 
-    let page = doc.get_dictionary(page_id).unwrap();
-    let size = dimensions(page);
+    let page = doc.get_dictionary(page_id)?;
+    let size = dimensions(page)?;
 
-    let event_loop = EventLoop::new().unwrap();
+    let event_loop = EventLoop::new()?;
 
     let mut app = App {
         renderer: None,
         doc: doc,
         size: PhysicalSize {
-            width: size.0 * DEFAULT_SCALE as u32,
-            height: size.1 * DEFAULT_SCALE as u32,
+            width: size.0 * scale as u32,
+            height: size.1 * scale as u32,
         },
     };
-    event_loop.run_app(&mut app).unwrap();
+    event_loop.run_app(&mut app)?;
 
     loop {
         std::thread::sleep(Duration::from_secs(1));
@@ -159,7 +164,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     match &args[..] {
         [_, file] => {
-            go(&file, DEFAULT_SCALE);
+            go(&file, DEFAULT_SCALE).unwrap();
         }
         _ => {
             eprintln!("Usage: [filename]");

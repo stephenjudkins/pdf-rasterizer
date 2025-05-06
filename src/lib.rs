@@ -221,8 +221,8 @@ pub fn draw_text<T: Renderer>(
     ts: &mut TextState,
     gs: &mut &GraphicsState,
     glyphs: &Vec<Object>,
-) {
-    let font = ts.font.as_ref().unwrap();
+) -> Result<()> {
+    let font = ts.font.as_ref().ok_or(eyre!("no font sent"))?;
 
     for glyph in glyphs {
         match glyph {
@@ -267,12 +267,10 @@ pub fn draw_text<T: Renderer>(
                             let h = metrics.height() as f32;
                             let x0 = x * scale + (metrics.min.x as f32);
                             let y0 = 0.0 - (y * scale) + (metrics.min.y as f32);
-                            let image_id = canvas
-                                .create_image(
-                                    ImageSource::try_from(&DynamicImage::from(image)).unwrap(),
-                                    ImageFlags::REPEAT_Y,
-                                )
-                                .unwrap();
+                            let image_id = canvas.create_image(
+                                ImageSource::try_from(&DynamicImage::from(image))?,
+                                ImageFlags::REPEAT_Y,
+                            )?;
                             let img_paint = Paint::image(
                                 image_id,
                                 x0,
@@ -297,45 +295,47 @@ pub fn draw_text<T: Renderer>(
     }
 
     canvas.reset();
+
+    Ok(())
 }
 
-pub fn dimensions(page: &Dictionary) -> (u32, u32) {
-    match page
-        .get(b"MediaBox")
-        .unwrap()
-        .as_array()
-        .unwrap()
-        .as_slice()
-    {
+pub fn dimensions(page: &Dictionary) -> Result<(u32, u32)> {
+    match page.get(b"MediaBox")?.as_array()?.as_slice() {
         &[
             Object::Integer(x),
             Object::Integer(y),
             Object::Integer(w),
             Object::Integer(h),
         ] if x == 0 && y == 0 => match (w.try_into(), h.try_into()) {
-            (Ok(w), Ok(h)) => (w, h),
-            (w, h) => panic!("Expected w, h > 0, got {:?}", (w, h)),
+            (Ok(w), Ok(h)) => Ok((w, h)),
+            (w, h) => bail!("Expected w, h > 0, got {:?}", (w, h)),
         },
-        other => panic!("Expected [0 0 w h], but {:?}", other),
+        other => bail!("Expected [0 0 w h], but {:?}", other),
     }
 }
 
-pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) {
-    let page_id = doc.get_pages().get(&page).unwrap().clone();
-    let size = dimensions(doc.get_dictionary(page_id).unwrap());
+pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) -> Result<()> {
+    let page_id = doc
+        .get_pages()
+        .get(&page)
+        .ok_or(eyre!("No such page"))?
+        .clone();
+    let size: (u32, u32) = dimensions(doc.get_dictionary(page_id)?)?;
     let scale = canvas.width() as f32 / size.0 as f32;
-    let fonts = doc.get_page_fonts(page_id).unwrap();
+    let fonts = doc.get_page_fonts(page_id)?;
 
-    let font_map: HashMap<Vec<u8>, Rc<Font>> = fonts
+    let font_map_result: Result<HashMap<Vec<u8>, Rc<Font>>> = fonts
         .iter()
         .map(|(font_id, font_obj)| {
-            let font = Font::from_pdf(doc, &Object::Dictionary((*font_obj).clone())).unwrap();
-            (font_id.clone(), Rc::new(font))
+            let font = Font::from_pdf(doc, &Object::Dictionary((*font_obj).clone()))?;
+            Ok((font_id.clone(), Rc::new(font)))
         })
         .collect();
 
-    let raw = doc.get_page_content(page_id).unwrap();
-    let content = Content::decode(&raw).unwrap();
+    let font_map = font_map_result?;
+
+    let raw = doc.get_page_content(page_id)?;
+    let content = Content::decode(&raw)?;
 
     let mut state = State::default();
 
@@ -380,7 +380,7 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
             ("TJ", [text]) => match &mut state.text_state {
                 Some(ts) => match &mut state.graphics_state.last() {
                     Some(gs) => {
-                        draw_text(scale, canvas, ts, gs, text.as_array().unwrap());
+                        draw_text(scale, canvas, ts, gs, text.as_array()?)?;
                     }
                     _ => (),
                 },
@@ -399,7 +399,10 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
                     f: f0.as_float().unwrap(),
                 };
 
-                let gs = state.graphics_state.last_mut().unwrap();
+                let gs = state
+                    .graphics_state
+                    .last_mut()
+                    .ok_or(eyre!("empty graphics stack"))?;
 
                 let next = concat(&gs.ctm, &ctm);
                 gs.ctm = next
@@ -409,9 +412,14 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
                 state.graphics_state.push(gs);
             }
             ("Q", []) => {
-                state.graphics_state.pop().unwrap();
+                state
+                    .graphics_state
+                    .pop()
+                    .ok_or(eyre!("Popped empty graphics stack"))?;
             }
             _ => (),
         }
     }
+
+    Ok(())
 }
