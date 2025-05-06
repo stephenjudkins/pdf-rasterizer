@@ -1,0 +1,13 @@
+[package]
+name = "rasterizer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eyre = "0.6.12"
+femtovg = { version = "0.14.0", features = ["wgpu"] }
+lopdf = "0.36.0"
+pollster = "0.4.0"
+rusttype = "0.9.3"
+wgpu = "24.0.3"
+winit = "0.30.10"
