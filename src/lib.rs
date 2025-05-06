@@ -228,11 +228,10 @@ pub fn draw_text<T: Renderer>(
     for glyph in glyphs {
         match glyph {
             Object::String(bytes, _) => {
-                let glyph_ids: Vec<u16> = bytes
+                let glyph_ids = bytes
                     .chunks_exact(2)
                     .into_iter()
-                    .map(|b| u16::from_be_bytes([b[0], b[1]]))
-                    .collect();
+                    .map(|b| u16::from_be_bytes([b[0], b[1]]));
 
                 for glyph_id in glyph_ids {
                     let Coord { x, y } = transform(
