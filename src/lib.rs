@@ -220,7 +220,7 @@ pub fn draw_text<T: Renderer>(
     canvas: &mut Canvas<T>,
     ts: &mut TextState,
     gs: &mut &GraphicsState,
-    glyphs: &Vec<Object>,
+    glyphs: &[Object],
 ) -> Result<()> {
     let font = ts.font.as_ref().ok_or(eyre!("no font sent"))?;
 
