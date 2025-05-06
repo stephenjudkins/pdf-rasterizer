@@ -5,7 +5,10 @@ use std::{
     env,
     process::{self, ExitCode},
 };
-use std::{fs::File, io::Read};
+use std::{
+    fs::{self, File},
+    io::Read,
+};
 
 use femtovg::Color;
 use femtovg::{Canvas, renderer::WGPURenderer};
@@ -132,10 +135,8 @@ const PAGE: u32 = 1;
 const DEFAULT_SCALE: f32 = 2.75;
 
 fn go(path: &str, scale: f32) -> Result<()> {
-    let mut file = File::open(path)?;
-    let mut buf = Vec::new();
-    file.read_to_end(&mut buf)?;
-    let doc = Document::load_mem(&buf)?;
+    let bytes = fs::read(path)?;
+    let doc = Document::load_mem(&bytes)?;
 
     let page_id = doc
         .get_pages()
