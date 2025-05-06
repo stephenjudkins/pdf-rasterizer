@@ -127,9 +127,9 @@ impl ApplicationHandler for App {
     }
 }
 
-static PAGE: u32 = 1;
+const PAGE: u32 = 1;
 
-static DEFAULT_SCALE: f32 = 2.75;
+const DEFAULT_SCALE: f32 = 2.75;
 
 fn go(path: &String, scale: f32) -> Result<()> {
     let mut file = File::open(path)?;

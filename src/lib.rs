@@ -213,7 +213,7 @@ impl Default for State<'_> {
     }
 }
 
-static TEXT_SCALE: f32 = 1000.;
+const TEXT_SCALE: f32 = 1000.;
 
 pub fn draw_text<T: Renderer>(
     scale: f32,
