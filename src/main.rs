@@ -1,4 +1,4 @@
-use eyre::{Result, bail, eyre};
+use eyre::{Result, eyre};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::{env, process};
