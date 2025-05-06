@@ -131,7 +131,7 @@ const PAGE: u32 = 1;
 
 const DEFAULT_SCALE: f32 = 2.75;
 
-fn go(path: &String, scale: f32) -> Result<()> {
+fn go(path: &str, scale: f32) -> Result<()> {
     let mut file = File::open(path)?;
     let mut buf = Vec::new();
     file.read_to_end(&mut buf)?;
