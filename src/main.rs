@@ -165,7 +165,7 @@ fn go(path: &str, scale: f32) -> Result<()> {
 
 fn main() -> Result<ExitCode> {
     let mut args = env::args().skip(1);
-    if let Some(file) = args.next() {
+    if let (Some(file), None) = (args.next(), args.next()) {
         go(&file, DEFAULT_SCALE)?;
         Ok(ExitCode::SUCCESS)
     } else {
