@@ -33,12 +33,12 @@ struct AppRenderer {
 }
 
 impl AppRenderer {
-    fn draw(&mut self, doc: &Document) {
+    fn draw(&mut self, doc: &Document) -> Result<()> {
         let size = self.window.inner_size();
         let canvas = &mut self.canvas;
         canvas.set_size(size.width, size.height, self.window.scale_factor() as f32);
         canvas.clear_rect(0, 0, size.width, size.height, Color::white());
-        draw_doc(doc, canvas, PAGE).unwrap();
+        draw_doc(doc, canvas, PAGE)?;
 
         // canvas.fill_text(x, y, text, paint)
         canvas.save();
@@ -53,28 +53,27 @@ impl AppRenderer {
 
         frame.present();
 
-        ()
+        Ok(())
     }
 }
 
-async fn start(window: Arc<Window>) -> AppRenderer {
+async fn start(window: Arc<Window>) -> Result<AppRenderer> {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions::default())
         .await
-        .unwrap();
+        .ok_or_else(|| eyre!("failed to get adapter"))?;
 
     let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor::default(), None)
-        .await
-        .unwrap();
+        .await?;
 
     let size = window.inner_size();
 
-    let surface = instance.create_surface(window.clone()).unwrap();
+    let surface = instance.create_surface(window.clone())?;
     let mut surface_config = surface
         .get_default_config(&adapter, size.width, size.height)
-        .unwrap();
+        .ok_or_else(|| eyre!("failed to get default config"))?;
 
     let swapchain_capabilities = surface.get_capabilities(&adapter);
     let swapchain_format = swapchain_capabilities
@@ -88,14 +87,14 @@ async fn start(window: Arc<Window>) -> AppRenderer {
 
     let renderer = WGPURenderer::new(device, queue.clone());
 
-    let canvas = Canvas::new(renderer).unwrap();
+    let canvas = Canvas::new(renderer)?;
 
-    AppRenderer {
+    Ok(AppRenderer {
         window: window,
         canvas: canvas,
         queue: queue,
         surface: surface,
-    }
+    })
 }
 
 impl ApplicationHandler for App {
@@ -107,7 +106,7 @@ impl ApplicationHandler for App {
                     .with_inner_size(self.size),
             )
             .unwrap();
-        let renderer = pollster::block_on(start(Arc::new(window)));
+        let renderer = pollster::block_on(start(Arc::new(window))).unwrap();
         self.renderer = Some(Mutex::new(renderer));
     }
 
@@ -123,7 +122,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 let renderer = self.renderer.as_mut().unwrap().get_mut().unwrap();
-                renderer.draw(&self.doc);
+                renderer.draw(&self.doc).unwrap();
             }
             _ => (),
         }
@@ -141,7 +140,7 @@ fn go(path: &str, scale: f32) -> Result<()> {
     let page_id = doc
         .get_pages()
         .get(&PAGE)
-        .ok_or(eyre!("expected page"))?
+        .ok_or_else(|| eyre!("expected page"))?
         .clone();
 
     let page = doc.get_dictionary(page_id)?;
