@@ -207,13 +207,15 @@ impl Default for GraphicsState<'_> {
 
 #[derive(Debug)]
 pub struct State<'a> {
-    pub graphics_state: Vec<GraphicsState<'a>>,
+    pub gs: GraphicsState<'a>,
+    pub stack: Vec<GraphicsState<'a>>,
 }
 
 impl Default for State<'_> {
     fn default() -> Self {
         Self {
-            graphics_state: vec![Default::default()],
+            gs: Default::default(),
+            stack: Vec::new(),
         }
     }
 }
@@ -329,17 +331,7 @@ pub fn dimensions(page: &Dictionary) -> Result<(u32, u32)> {
     }
 }
 
-fn alter_gfx_state<F, A>(state: &mut State, mut f: F) -> Result<A>
-where
-    F: FnMut(&mut GraphicsState) -> Result<A>,
-{
-    let gs = state
-        .graphics_state
-        .last_mut()
-        .ok_or(eyre!("empty graphics stack"))?;
 
-    f(gs)
-}
 
 pub struct DeviceScale {
     height: u32,
@@ -388,57 +380,36 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
         let o = op.operator.as_str();
         match (o, &op.operands[..]) {
             ("BT", []) => {
-                alter_gfx_state(&mut state, |gs| {
-                    gs.text_state = Some(TextState::default());
-                    Ok(())
-                })?;
+                state.gs.text_state = Some(TextState::default());
             }
             ("Tm", [a, b, c, d, e, f]) => {
-                alter_gfx_state(&mut state, |gs| {
-                    gs.text_state = Some(TextState::default());
-                    match &mut gs.text_state {
-                        Some(ts) => {
-                            let tm = CTM {
-                                a: a.as_float()?,
-                                b: b.as_float()?,
-                                c: c.as_float()?,
-                                d: d.as_float()?,
-                                e: e.as_float()?,
-                                f: f.as_float()?,
-                            };
-
-                            ts.matrix = concat(&gs.ctm, &tm);
-                        }
-                        _ => (),
-                    }
-
-                    Ok(())
-                })?;
-            }
-            ("Tf", [Object::Name(n), size]) => alter_gfx_state(&mut state, |gs| {
-                match font_map.get(n) {
-                    Some(font) => match &mut gs.text_state {
-                        Some(ts) => {
-                            ts.font = Some(font.clone());
-                            ts.size = size.as_float().unwrap();
-                        }
-                        _ => (),
-                    },
-                    None => (),
+                state.gs.text_state = Some(TextState::default()); // Preserving original logic
+                if let Some(ts) = &mut state.gs.text_state {
+                    let tm_params = CTM {
+                        a: a.as_float()?,
+                        b: b.as_float()?,
+                        c: c.as_float()?,
+                        d: d.as_float()?,
+                        e: e.as_float()?,
+                        f: f.as_float()?,
+                    };
+                    ts.matrix = concat(&state.gs.ctm, &tm_params);
                 }
-                Ok(())
-            })?,
+            }
+            ("Tf", [Object::Name(n), size]) => {
+                if let Some(font) = font_map.get(n) {
+                    if let Some(ts) = &mut state.gs.text_state {
+                        ts.font = Some(font.clone());
+                        ts.size = size.as_float().unwrap(); // Assuming unwrap is intentional from original
+                    }
+                }
+            }
 
-            ("TJ", [text]) => alter_gfx_state(&mut state, |gs| {
-                draw_text(&scale, canvas, gs, text.as_array()?)?;
-                Ok(())
-            })?,
+            ("TJ", [text]) => {
+                draw_text(&scale, canvas, &mut state.gs, text.as_array()?)?;
+            }
             ("ET", []) => {
-                alter_gfx_state(&mut state, |gs| {
-                    gs.text_state = None;
-
-                    Ok(())
-                })?;
+                state.gs.text_state = None;
             }
             ("cm", [a, b, c, d, e, f]) => {
                 let ctm = CTM {
@@ -450,145 +421,108 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
                     f: f.as_float()?,
                 };
 
-                alter_gfx_state(&mut state, |gs| {
-                    gs.ctm = concat(&gs.ctm, &ctm);
-                    Ok(())
-                })?;
+                state.gs.ctm = concat(&state.gs.ctm, &ctm);
             }
 
             ("q", []) => {
-                let gs = state.graphics_state.last().cloned().unwrap_or_default();
-                state.graphics_state.push(gs);
+                state.stack.push(state.gs.clone());
             }
             ("Q", []) => {
-                state
-                    .graphics_state
-                    .pop()
-                    .ok_or_else(|| eyre!("Popped empty graphics stack"))?;
+                state.gs = state.stack.pop().ok_or_else(|| eyre!("Popped empty graphics stack: unbalanced q/Q operators"))?;
             }
             ("scn", [r, g, b]) => {
-                alter_gfx_state(&mut state, |gs| {
-                    gs.non_stroke_color = to_color(r, g, b)?;
-                    Ok(())
-                })?;
+                state.gs.non_stroke_color = to_color(r, g, b)?;
             }
             ("SCN", [r, g, b]) => {
-                alter_gfx_state(&mut state, |gs| {
-                    gs.stroke_color = to_color(r, g, b)?;
-                    Ok(())
-                })?;
+                state.gs.stroke_color = to_color(r, g, b)?;
             }
             ("m", [x, y]) => {
-                alter_gfx_state(&mut state, |gs| {
-                    let xy = transform(
-                        &Coord {
-                            x: x.as_float()?,
-                            y: y.as_float()?,
-                        },
-                        &gs.ctm,
-                        &scale,
-                    );
-                    gs.path.move_to(xy.x, xy.y);
-                    Ok(())
-                })?;
+                let xy = transform(
+                    &Coord {
+                        x: x.as_float()?,
+                        y: y.as_float()?,
+                    },
+                    &state.gs.ctm,
+                    &scale,
+                );
+                state.gs.path.move_to(xy.x, xy.y);
             }
             ("l", [x, y]) => {
-                alter_gfx_state(&mut state, |gs| {
-                    let xy = transform(
-                        &Coord {
-                            x: x.as_float()?,
-                            y: y.as_float()?,
-                        },
-                        &gs.ctm,
-                        &scale,
-                    );
-                    gs.path.line_to(xy.x, xy.y);
-                    Ok(())
-                })?;
+                let xy = transform(
+                    &Coord {
+                        x: x.as_float()?,
+                        y: y.as_float()?,
+                    },
+                    &state.gs.ctm,
+                    &scale,
+                );
+                state.gs.path.line_to(xy.x, xy.y);
             }
             ("c", [x1, y1, x2, y2, x3, y3]) => {
-                alter_gfx_state(&mut state, |gs| {
-                    let xy1 = transform(
-                        &Coord {
-                            x: x1.as_float()?,
-                            y: y1.as_float()?,
-                        },
-                        &gs.ctm,
-                        &scale,
-                    );
-                    let xy2 = transform(
-                        &Coord {
-                            x: x2.as_float()?,
-                            y: y2.as_float()?,
-                        },
-                        &gs.ctm,
-                        &scale,
-                    );
-                    let xy3 = transform(
-                        &Coord {
-                            x: x3.as_float()?,
-                            y: y3.as_float()?,
-                        },
-                        &gs.ctm,
-                        &scale,
-                    );
-                    gs.path.bezier_to(xy1.x, xy1.y, xy2.x, xy2.y, xy3.x, xy3.y);
-                    Ok(())
-                })?;
+                let xy1 = transform(
+                    &Coord {
+                        x: x1.as_float()?,
+                        y: y1.as_float()?,
+                    },
+                    &state.gs.ctm,
+                    &scale,
+                );
+                let xy2 = transform(
+                    &Coord {
+                        x: x2.as_float()?,
+                        y: y2.as_float()?,
+                    },
+                    &state.gs.ctm,
+                    &scale,
+                );
+                let xy3 = transform(
+                    &Coord {
+                        x: x3.as_float()?,
+                        y: y3.as_float()?,
+                    },
+                    &state.gs.ctm,
+                    &scale,
+                );
+                state.gs.path.bezier_to(xy1.x, xy1.y, xy2.x, xy2.y, xy3.x, xy3.y);
             }
             ("re", [xo, yo, wo, ho]) => {
-                alter_gfx_state(&mut state, |gs| {
-                    let x = xo.as_float()?;
-                    let y = yo.as_float()?;
-                    let w = wo.as_float()?;
-                    let h = ho.as_float()?;
-                    let xy0 = transform(&Coord { x, y }, &gs.ctm, &scale);
-                    let xy1 = transform(&Coord { x: x + w, y: y + h }, &gs.ctm, &scale);
-                    let wh = Coord {
-                        x: xy1.x - xy0.x,
-                        y: xy1.y - xy0.y,
-                    };
-                    gs.path.rect(xy0.x, xy0.y, wh.x, wh.y);
-                    Ok(())
-                })?;
+                let x = xo.as_float()?;
+                let y = yo.as_float()?;
+                let w = wo.as_float()?;
+                let h = ho.as_float()?;
+                let xy0 = transform(&Coord { x, y }, &state.gs.ctm, &scale);
+                let xy1 = transform(&Coord { x: x + w, y: y + h }, &state.gs.ctm, &scale);
+                let wh = Coord {
+                    x: xy1.x - xy0.x,
+                    y: xy1.y - xy0.y,
+                };
+                state.gs.path.rect(xy0.x, xy0.y, wh.x, wh.y);
             }
             ("h", []) => {
-                alter_gfx_state(&mut state, |gs| {
-                    gs.path.close();
-                    Ok(())
-                })?;
+                state.gs.path.close();
             }
             ("f" | "f*", []) => {
-                alter_gfx_state(&mut state, |gs| {
-                    let fill_rule = if o == "f" {
-                        FillRule::NonZero
-                    } else {
-                        FillRule::EvenOdd
-                    };
-                    // eprintln!("{:?}", &gs.path);
-                    canvas.fill_path(
-                        &gs.path,
-                        &Paint::color(gs.non_stroke_color).with_fill_rule(fill_rule),
-                    );
-                    gs.path = Path::new();
-                    Ok(())
-                })?;
+                let fill_rule = if o == "f" {
+                    FillRule::NonZero
+                } else {
+                    FillRule::EvenOdd
+                };
+                // eprintln!("{:#?}", &state.gs.path);
+                canvas.fill_path(
+                    &state.gs.path,
+                    &Paint::color(state.gs.non_stroke_color).with_fill_rule(fill_rule),
+                );
+                state.gs.path = Path::new();
             }
             ("w", [lw]) => {
-                alter_gfx_state(&mut state, |gs| {
-                    gs.line_width = lw.as_float()?;
-                    Ok(())
-                })?;
+                state.gs.line_width = lw.as_float()?;
             }
             ("S", []) => {
-                alter_gfx_state(&mut state, |gs| {
-                    canvas.stroke_path(
-                        &gs.path,
-                        &Paint::color(gs.stroke_color).with_line_width(gs.line_width * scale.scale),
-                    );
-                    gs.path = Path::new();
-                    Ok(())
-                })?;
+                canvas.stroke_path(
+                    &state.gs.path,
+                    &Paint::color(state.gs.stroke_color).with_line_width(state.gs.line_width * scale.scale),
+                );
+                state.gs.path = Path::new();
             }
 
             (o, a) => {
