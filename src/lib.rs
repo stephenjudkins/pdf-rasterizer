@@ -331,8 +331,6 @@ pub fn dimensions(page: &Dictionary) -> Result<(u32, u32)> {
     }
 }
 
-
-
 pub struct DeviceScale {
     height: u32,
     scale: f32,
@@ -383,7 +381,7 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
                 state.gs.text_state = Some(TextState::default());
             }
             ("Tm", [a, b, c, d, e, f]) => {
-                state.gs.text_state = Some(TextState::default()); // Preserving original logic
+                state.gs.text_state = Some(TextState::default());
                 if let Some(ts) = &mut state.gs.text_state {
                     let tm_params = CTM {
                         a: a.as_float()?,
@@ -400,7 +398,7 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
                 if let Some(font) = font_map.get(n) {
                     if let Some(ts) = &mut state.gs.text_state {
                         ts.font = Some(font.clone());
-                        ts.size = size.as_float().unwrap(); // Assuming unwrap is intentional from original
+                        ts.size = size.as_float()?;
                     }
                 }
             }
@@ -428,7 +426,9 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
                 state.stack.push(state.gs.clone());
             }
             ("Q", []) => {
-                state.gs = state.stack.pop().ok_or_else(|| eyre!("Popped empty graphics stack: unbalanced q/Q operators"))?;
+                state.gs = state.stack.pop().ok_or_else(|| {
+                    eyre!("Popped empty graphics stack: unbalanced q/Q operators")
+                })?;
             }
             ("scn", [r, g, b]) => {
                 state.gs.non_stroke_color = to_color(r, g, b)?;
@@ -483,7 +483,10 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
                     &state.gs.ctm,
                     &scale,
                 );
-                state.gs.path.bezier_to(xy1.x, xy1.y, xy2.x, xy2.y, xy3.x, xy3.y);
+                state
+                    .gs
+                    .path
+                    .bezier_to(xy1.x, xy1.y, xy2.x, xy2.y, xy3.x, xy3.y);
             }
             ("re", [xo, yo, wo, ho]) => {
                 let x = xo.as_float()?;
@@ -520,7 +523,8 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
             ("S", []) => {
                 canvas.stroke_path(
                     &state.gs.path,
-                    &Paint::color(state.gs.stroke_color).with_line_width(state.gs.line_width * scale.scale),
+                    &Paint::color(state.gs.stroke_color)
+                        .with_line_width(state.gs.line_width * scale.scale),
                 );
                 state.gs.path = Path::new();
             }
