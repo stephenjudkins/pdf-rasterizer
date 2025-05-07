@@ -1,14 +1,8 @@
 use eyre::{Result, WrapErr, eyre};
+use std::fs;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use std::{
-    env,
-    process::{self, ExitCode},
-};
-use std::{
-    fs::{self, File},
-    io::Read,
-};
+use std::{env, process::ExitCode};
 
 use femtovg::Color;
 use femtovg::{Canvas, renderer::WGPURenderer};
@@ -131,7 +125,7 @@ impl ApplicationHandler for App {
 
 const PAGE: u32 = 1;
 
-const DEFAULT_SCALE: f32 = 3.0;
+const DEFAULT_SCALE: f32 = 2.;
 
 fn go(path: &str, scale: f32) -> Result<()> {
     let bytes = fs::read(path)?;

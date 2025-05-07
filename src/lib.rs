@@ -3,9 +3,8 @@ use std::{collections::HashMap, fmt::Debug, rc::Rc};
 
 use eyre::{Result, bail, eyre};
 use femtovg::{
-    Canvas, Color, ImageFlags, ImageSource, Paint, Path, Renderer, Solidity,
+    Canvas, Color, FillRule, ImageFlags, ImageSource, Paint, Path, Renderer,
     img::{DynamicImage, Rgba},
-    rgb,
 };
 use lopdf::{Dictionary, Document, Object, ObjectId, content::Content};
 use rusttype::Scale;
@@ -386,7 +385,8 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
     canvas.stroke_path(&tp, &Paint::color(Color::black()));
 
     for op in content.operations {
-        match (op.operator.as_str(), &op.operands[..]) {
+        let o = op.operator.as_str();
+        match (o, &op.operands[..]) {
             ("BT", []) => {
                 alter_gfx_state(&mut state, |gs| {
                     gs.text_state = Some(TextState::default());
@@ -558,9 +558,18 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
                     Ok(())
                 })?;
             }
-            ("f", []) => {
+            ("f" | "f*", []) => {
                 alter_gfx_state(&mut state, |gs| {
-                    canvas.fill_path(&gs.path, &Paint::color(gs.non_stroke_color));
+                    let fill_rule = if o == "f" {
+                        FillRule::NonZero
+                    } else {
+                        FillRule::EvenOdd
+                    };
+                    // eprintln!("{:?}", &gs.path);
+                    canvas.fill_path(
+                        &gs.path,
+                        &Paint::color(gs.non_stroke_color).with_fill_rule(fill_rule),
+                    );
                     gs.path = Path::new();
                     Ok(())
                 })?;
@@ -571,7 +580,7 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
                     Ok(())
                 })?;
             }
-            ("W", []) => {
+            ("S", []) => {
                 alter_gfx_state(&mut state, |gs| {
                     canvas.stroke_path(
                         &gs.path,
