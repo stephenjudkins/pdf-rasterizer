@@ -120,13 +120,13 @@ pub struct TextState<'a> {
     pub font: Option<Rc<Font<'a>>>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Default, Debug, Clone, Copy)]
 pub struct Coord {
     pub x: f32,
     pub y: f32,
 }
 
-pub fn transform(xy: &Coord, ctm: &CTM, scale: &DeviceScale) -> Coord {
+pub fn transform_from(xy: &Coord, ctm: &CTM, scale: &DeviceScale) -> Coord {
     let CTM { a, b, c, d, e, f } = ctm;
     let Coord { x, y } = xy;
 
@@ -190,6 +190,7 @@ pub struct GraphicsState<'a> {
     pub path: Path,
     pub text_state: Option<TextState<'a>>,
     pub line_width: f32,
+    pub current_point: Coord,
 }
 
 impl Default for GraphicsState<'_> {
@@ -201,6 +202,7 @@ impl Default for GraphicsState<'_> {
             path: Path::new(),
             text_state: None,
             line_width: 1.,
+            current_point: Coord::default(),
         }
     }
 }
@@ -243,7 +245,7 @@ pub fn draw_text<T: Renderer>(
                     .map(|b| u16::from_be_bytes([b[0], b[1]]));
 
                 for glyph_id in glyph_ids {
-                    let Coord { x, y } = transform(
+                    let Coord { x, y } = transform_from(
                         &Coord {
                             x: ts.position / TEXT_SCALE * ts.size,
                             y: 0.,
@@ -369,13 +371,28 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
 
     let mut state = State::default();
 
-    let mut tp = Path::new();
-    tp.move_to(100., 100.);
-    tp.line_to(200., 200.);
-    canvas.stroke_path(&tp, &Paint::color(Color::black()));
+    let transform = |state: &State, x: &Object, y: &Object| -> Result<Coord> {
+        Ok(transform_from(
+            &Coord {
+                x: x.as_float()?,
+                y: y.as_float()?,
+            },
+            &state.gs.ctm,
+            &scale,
+        ))
+    };
+    // fn transform(xy: &Coord, ctm: &CTM, scale: &DeviceScale) -> Coord {
+    //     transform_from(xy, ctm, scale)
+    // }
+
+    // let mut tp = Path::new();
+    // tp.move_to(100., 100.);
+    // tp.line_to(200., 500.);
+    // canvas.stroke_path(&tp, &Paint::color(Color::black()));
 
     for op in content.operations {
         let o = op.operator.as_str();
+        eprintln!("op: {:?} {:?}", o, &op.operands[..]);
         match (o, &op.operands[..]) {
             ("BT", []) => {
                 state.gs.text_state = Some(TextState::default());
@@ -437,64 +454,42 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
                 state.gs.stroke_color = to_color(r, g, b)?;
             }
             ("m", [x, y]) => {
-                let xy = transform(
-                    &Coord {
-                        x: x.as_float()?,
-                        y: y.as_float()?,
-                    },
-                    &state.gs.ctm,
-                    &scale,
-                );
+                let xy = transform(&state, &x, y)?;
                 state.gs.path.move_to(xy.x, xy.y);
+                state.gs.current_point = xy;
             }
             ("l", [x, y]) => {
-                let xy = transform(
-                    &Coord {
-                        x: x.as_float()?,
-                        y: y.as_float()?,
-                    },
-                    &state.gs.ctm,
-                    &scale,
-                );
+                let xy = transform(&state, &x, y)?;
                 state.gs.path.line_to(xy.x, xy.y);
+                state.gs.current_point = xy;
             }
-            ("c", [x1, y1, x2, y2, x3, y3]) => {
-                let xy1 = transform(
-                    &Coord {
-                        x: x1.as_float()?,
-                        y: y1.as_float()?,
-                    },
-                    &state.gs.ctm,
-                    &scale,
-                );
-                let xy2 = transform(
-                    &Coord {
-                        x: x2.as_float()?,
-                        y: y2.as_float()?,
-                    },
-                    &state.gs.ctm,
-                    &scale,
-                );
-                let xy3 = transform(
-                    &Coord {
-                        x: x3.as_float()?,
-                        y: y3.as_float()?,
-                    },
-                    &state.gs.ctm,
-                    &scale,
-                );
+            ("v", [x2, y2, x3, y3]) => {
+                let xy1 = state.gs.current_point;
+                let xy2 = transform(&state, &x2, &y2)?;
+                let xy3 = transform(&state, &x3, &y3)?;
                 state
                     .gs
                     .path
                     .bezier_to(xy1.x, xy1.y, xy2.x, xy2.y, xy3.x, xy3.y);
+                state.gs.current_point = xy3;
+            }
+            ("c", [x1, y1, x2, y2, x3, y3]) => {
+                let xy1 = transform(&state, &x1, &y1)?;
+                let xy2 = transform(&state, &x2, &y2)?;
+                let xy3 = transform(&state, &x3, &y3)?;
+                state
+                    .gs
+                    .path
+                    .bezier_to(xy1.x, xy1.y, xy2.x, xy2.y, xy3.x, xy3.y);
+                state.gs.current_point = xy3;
             }
             ("re", [xo, yo, wo, ho]) => {
                 let x = xo.as_float()?;
                 let y = yo.as_float()?;
                 let w = wo.as_float()?;
                 let h = ho.as_float()?;
-                let xy0 = transform(&Coord { x, y }, &state.gs.ctm, &scale);
-                let xy1 = transform(&Coord { x: x + w, y: y + h }, &state.gs.ctm, &scale);
+                let xy0 = transform_from(&Coord { x, y }, &state.gs.ctm, &scale);
+                let xy1 = transform_from(&Coord { x: x + w, y: y + h }, &state.gs.ctm, &scale);
                 let wh = Coord {
                     x: xy1.x - xy0.x,
                     y: xy1.y - xy0.y,
@@ -510,7 +505,6 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
                 } else {
                     FillRule::EvenOdd
                 };
-                // eprintln!("{:#?}", &state.gs.path);
                 canvas.fill_path(
                     &state.gs.path,
                     &Paint::color(state.gs.non_stroke_color).with_fill_rule(fill_rule),
@@ -528,9 +522,21 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
                 );
                 state.gs.path = Path::new();
             }
+            ("B", []) => {
+                canvas.fill_path(
+                    &state.gs.path,
+                    &Paint::color(state.gs.non_stroke_color).with_fill_rule(FillRule::NonZero),
+                );
+                canvas.stroke_path(
+                    &state.gs.path,
+                    &Paint::color(state.gs.stroke_color)
+                        .with_line_width(state.gs.line_width * scale.scale),
+                );
+                state.gs.path = Path::new();
+            }
 
             (o, a) => {
-                eprintln!("op: {:?} {:?}", o, a);
+                // eprintln!("op: {:?} {:?}", o, a);
             }
         }
     }

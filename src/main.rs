@@ -34,7 +34,6 @@ impl AppRenderer {
         canvas.clear_rect(0, 0, size.width, size.height, Color::white());
         draw_doc(doc, canvas, PAGE)?;
 
-        // canvas.fill_text(x, y, text, paint)
         canvas.save();
         canvas.reset();
         let frame = self
@@ -43,6 +42,8 @@ impl AppRenderer {
             .wrap_err_with(|| eyre!("unable to get next texture from swapchain"))?;
         let commands = canvas.flush_to_surface(&frame.texture);
 
+        // canvas.scissor(x, y, w, h);
+
         self.queue.submit(Some(commands));
 
         frame.present();
@@ -50,7 +51,6 @@ impl AppRenderer {
         Ok(())
     }
 }
-
 async fn start(window: Arc<Window>) -> Result<AppRenderer> {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
     let adapter = instance
