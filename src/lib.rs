@@ -1,7 +1,9 @@
 use core::fmt;
 use std::{collections::HashMap, fmt::Debug, rc::Rc};
 
-use eyre::{Result, bail, eyre};
+use eyre::{Result, WrapErr, bail, eyre};
+
+pub mod offscreen;
 use femtovg::{
     Canvas, Color, FillRule, ImageFlags, ImageSource, Paint, Path, Renderer,
     img::{DynamicImage, Rgba},
