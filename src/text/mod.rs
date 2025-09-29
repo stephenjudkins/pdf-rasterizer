@@ -58,7 +58,7 @@ pub fn draw_text<T: Renderer>(
                                 metrics.height() as u32,
                             )
                             .to_rgba8();
-                            let Color { r, g, b, a: _ } = gs.non_stroke_color;
+                            let Color { r, g, b, a } = gs.non_stroke_color;
                             positioned.draw(|x, y, v| {
                                 image.put_pixel(
                                     x as u32,
@@ -67,7 +67,7 @@ pub fn draw_text<T: Renderer>(
                                         (r * 255.) as u8,
                                         (g * 255.) as u8,
                                         (b * 255.) as u8,
-                                        (v * 255.) as u8,
+                                        (v * a * 255.) as u8,
                                     ]),
                                 )
                             });

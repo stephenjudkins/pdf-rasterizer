@@ -40,7 +40,7 @@ pub async fn pdf_to_rgba_image(doc: &Document, page: u32, scale: f32) -> Result<
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        format: wgpu::TextureFormat::Rgba8Unorm,
         usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::RENDER_ATTACHMENT,
         label: Some("Render Texture"),
         view_formats: &[],
@@ -64,7 +64,7 @@ pub async fn pdf_to_rgba_image(doc: &Document, page: u32, scale: f32) -> Result<
     canvas.set_size(width, height, 1.0);
     canvas.clear_rect(0, 0, width, height, Color::white());
 
-    draw_doc(doc, &mut canvas, page)?;
+    draw_doc(doc, &mut canvas, page, &crate::RenderSettings::default())?;
 
     let commands = canvas.flush_to_surface(&texture);
     queue.submit(Some(commands));

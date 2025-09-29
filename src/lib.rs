@@ -222,6 +222,17 @@ impl Default for State<'_> {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct RenderSettings {
+    pub anti_alias: bool,
+}
+
+impl Default for RenderSettings {
+    fn default() -> Self {
+        Self { anti_alias: false }
+    }
+}
+
 pub fn dimensions(page: &Dictionary) -> Result<(u32, u32)> {
     match page.get(b"MediaBox")?.as_array()?.as_slice() {
         &[
@@ -246,19 +257,48 @@ fn to_color(r: &Object, g: &Object, b: &Object) -> Result<Color> {
     Ok(Color::rgbf(r.as_float()?, g.as_float()?, b.as_float()?))
 }
 
-pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) -> Result<()> {
+pub fn draw_doc<T: Renderer>(
+    doc: &Document,
+    canvas: &mut Canvas<T>,
+    page: u32,
+    settings: &RenderSettings,
+) -> Result<()> {
     let page_id = doc
         .get_pages()
         .get(&page)
         .ok_or_else(|| eyre!("No such page"))?
         .clone();
-    let size: (u32, u32) = dimensions(doc.get_dictionary(page_id)?)?;
+    let page_dict = doc.get_dictionary(page_id)?;
+    let size: (u32, u32) = dimensions(page_dict)?;
     let scale = DeviceScale {
         height: canvas.height(),
         scale: canvas.width() as f32 / size.0 as f32,
     };
 
     let fonts = doc.get_page_fonts(page_id)?;
+    let default_dict = Dictionary::default();
+    let resource_dict = doc
+        .get_dict_in_dict(page_dict, b"Resources")
+        .unwrap_or(&default_dict);
+
+    eprintln!("{resource_dict:?}");
+
+    let ext_gstate_map: HashMap<Vec<u8>, Dictionary> = match resource_dict.get(b"ExtGState") {
+        Ok(obj) => match obj.as_dict() {
+            Ok(ext_gstate_dict) => ext_gstate_dict
+                .iter()
+                .filter_map(|(name, obj_ref)| {
+                    obj_ref
+                        .as_reference()
+                        .ok()
+                        .and_then(|id| doc.get_dictionary(id).ok())
+                        .map(|dict| (name.clone(), dict.clone()))
+                })
+                .collect(),
+            Err(_) => HashMap::new(),
+        },
+        Err(_) => HashMap::new(),
+    };
 
     let font_map: HashMap<Vec<u8>, Rc<Font>> = fonts
         .iter()
@@ -352,10 +392,14 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
                 })?;
             }
             ("scn", [r, g, b]) => {
-                state.gs.non_stroke_color = to_color(r, g, b)?;
+                let mut next = to_color(r, g, b)?;
+                next.set_alphaf(state.gs.non_stroke_color.a);
+                state.gs.non_stroke_color = next;
             }
             ("SCN", [r, g, b]) => {
-                state.gs.stroke_color = to_color(r, g, b)?;
+                let mut next = to_color(r, g, b)?;
+                next.set_alphaf(state.gs.stroke_color.a);
+                state.gs.stroke_color = next;
             }
             ("m", [x, y]) => {
                 let xy = transform(&state, &x, y)?;
@@ -411,7 +455,9 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
                 };
                 canvas.fill_path(
                     &state.gs.path,
-                    &Paint::color(state.gs.non_stroke_color).with_fill_rule(fill_rule),
+                    &Paint::color(state.gs.non_stroke_color)
+                        .with_fill_rule(fill_rule)
+                        .with_anti_alias(settings.anti_alias),
                 );
                 state.gs.path = Path::new();
             }
@@ -422,21 +468,35 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
                 canvas.stroke_path(
                     &state.gs.path,
                     &Paint::color(state.gs.stroke_color)
-                        .with_line_width(state.gs.line_width * scale.scale),
+                        .with_line_width(state.gs.line_width * scale.scale)
+                        .with_anti_alias(settings.anti_alias),
                 );
                 state.gs.path = Path::new();
             }
             ("B", []) => {
                 canvas.fill_path(
                     &state.gs.path,
-                    &Paint::color(state.gs.non_stroke_color).with_fill_rule(FillRule::NonZero),
+                    &Paint::color(state.gs.non_stroke_color)
+                        .with_fill_rule(FillRule::NonZero)
+                        .with_anti_alias(settings.anti_alias),
                 );
                 canvas.stroke_path(
                     &state.gs.path,
                     &Paint::color(state.gs.stroke_color)
-                        .with_line_width(state.gs.line_width * scale.scale),
+                        .with_line_width(state.gs.line_width * scale.scale)
+                        .with_anti_alias(settings.anti_alias),
                 );
                 state.gs.path = Path::new();
+            }
+            ("gs", [Object::Name(name)]) => {
+                if let Some(gstate_dict) = ext_gstate_map.get(name) {
+                    if let Some(ca) = gstate_dict.get(b"ca").and_then(|ca| ca.as_float()).ok() {
+                        state.gs.non_stroke_color.set_alphaf(ca);
+                    }
+                    if let Some(ca) = gstate_dict.get(b"CA").and_then(|ca| ca.as_float()).ok() {
+                        state.gs.stroke_color.set_alphaf(ca);
+                    }
+                }
             }
 
             (_o, _a) => {

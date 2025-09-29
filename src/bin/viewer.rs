@@ -32,7 +32,7 @@ impl AppRenderer {
         let canvas = &mut self.canvas;
         canvas.set_size(size.width, size.height, self.window.scale_factor() as f32);
         canvas.clear_rect(0, 0, size.width, size.height, Color::white());
-        draw_doc(doc, canvas, PAGE)?;
+        draw_doc(doc, canvas, PAGE, &RenderSettings::default())?;
 
         canvas.save();
         canvas.reset();

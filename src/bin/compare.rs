@@ -41,7 +41,12 @@ async fn compare_pdf_renderers(pdf_path: &str) -> Result<()> {
         .set_target_width(width as i32)
         .set_target_height(height as i32)
         .set_maximum_width(width as i32)
-        .set_maximum_height(height as i32);
+        .set_maximum_height(height as i32)
+        .set_path_smoothing(false)
+        .set_image_smoothing(false)
+        .set_text_smoothing(false)
+        .set_format(PdfBitmapFormat::BGRx)
+        .disable_native_text_rendering(true);
 
     let pdfium_image = page
         .render_with_config(&render_config)
