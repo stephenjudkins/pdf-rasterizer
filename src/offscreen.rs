@@ -5,18 +5,17 @@ use image::{ImageBuffer, RgbaImage};
 use lopdf::Document;
 use wgpu::{Device, Queue, Texture, TextureView};
 
-pub struct OffscreenRenderer {
+struct OffscreenRenderer {
     device: Device,
     queue: Queue,
     canvas: Canvas<WGPURenderer>,
     texture: Texture,
-    texture_view: TextureView,
     output_buffer: wgpu::Buffer,
     texture_size: (u32, u32),
 }
 
 impl OffscreenRenderer {
-    pub async fn new(width: u32, height: u32) -> Result<Self> {
+    async fn new(width: u32, height: u32) -> Result<Self> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -46,7 +45,6 @@ impl OffscreenRenderer {
             view_formats: &[],
         };
         let texture = device.create_texture(&texture_desc);
-        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let u32_size = std::mem::size_of::<u32>() as u32;
         // Calculate padded bytes per row for alignment
@@ -68,13 +66,12 @@ impl OffscreenRenderer {
             queue,
             canvas,
             texture,
-            texture_view,
             output_buffer,
             texture_size: (width, height),
         })
     }
 
-    pub fn render_pdf(&mut self, doc: &Document, page: u32) -> Result<()> {
+    fn render_pdf(&mut self, doc: &Document, page: u32) -> Result<()> {
         let (width, height) = self.texture_size;
 
         self.canvas.set_size(width, height, 1.0);
@@ -88,7 +85,7 @@ impl OffscreenRenderer {
         Ok(())
     }
 
-    pub async fn to_rgba_image(&self) -> Result<RgbaImage> {
+    async fn to_rgba_image(&self) -> Result<RgbaImage> {
         let (width, height) = self.texture_size;
         let u32_size = std::mem::size_of::<u32>() as u32;
 
@@ -163,4 +160,22 @@ impl OffscreenRenderer {
 
         Ok(buffer)
     }
+}
+
+pub async fn pdf_to_rgba_image(doc: &Document, page: u32, scale: f32) -> Result<RgbaImage> {
+    let page_id = doc
+        .get_pages()
+        .get(&page)
+        .ok_or_else(|| eyre!("Page {} not found in PDF", page))?
+        .clone();
+
+    let page_dict = doc.get_dictionary(page_id)?;
+    let size = dimensions(page_dict)?;
+
+    let width = (size.0 as f32 * scale) as u32;
+    let height = (size.1 as f32 * scale) as u32;
+
+    let mut renderer = OffscreenRenderer::new(width, height).await?;
+    renderer.render_pdf(doc, page)?;
+    renderer.to_rgba_image().await
 }
