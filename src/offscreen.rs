@@ -3,7 +3,6 @@ use eyre::{Result, eyre};
 use femtovg::{Canvas, Color, renderer::WGPURenderer};
 use image::{ImageBuffer, RgbaImage};
 use lopdf::Document;
-use wgpu::{Device, Queue, Texture};
 
 pub async fn pdf_to_rgba_image(doc: &Document, page: u32, scale: f32) -> Result<RgbaImage> {
     let page_id = doc

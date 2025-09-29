@@ -8,6 +8,7 @@ eyre = "0.6.12"
 femtovg = { version = "0.14.0", features = ["wgpu"] }
 image = { version = "0.25.8", features = ["png"] }
 lopdf = "0.36.0"
+pdfium-render = { version = "0.8.35", features = ["image"] }
 pollster = "0.4.0"
 rusttype = "0.9.3"
 wgpu = "24.0.3"
