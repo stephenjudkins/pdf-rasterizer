@@ -66,6 +66,7 @@ impl FromPDF for i64 {
 impl<'a> FromPDF for Font<'a> {
     fn from_pdf(doc: &Document, root: &Object) -> Result<Self> {
         let font = root.as_dict()?;
+        eprintln!("{:?}", font);
         let descendant_fonts: Vec<ObjectId> = get(doc, font.get(b"DescendantFonts")?)?;
         let descendent_font = doc.get_dictionary(match descendant_fonts[..] {
             [id] => id,
@@ -245,6 +246,7 @@ pub fn draw_text<T: Renderer>(
                     .map(|b| u16::from_be_bytes([b[0], b[1]]));
 
                 for glyph_id in glyph_ids {
+                    eprintln!("{glyph_id:?}");
                     let Coord { x, y } = transform_from(
                         &Coord {
                             x: ts.position / TEXT_SCALE * ts.size,
@@ -356,15 +358,16 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
 
     let fonts = doc.get_page_fonts(page_id)?;
 
-    let font_map_result: Result<HashMap<Vec<u8>, Rc<Font>>> = fonts
+    let font_map: HashMap<Vec<u8>, Rc<Font>> = fonts
         .iter()
-        .map(|(font_id, font_obj)| {
-            let font = Font::from_pdf(doc, &Object::Dictionary((*font_obj).clone()))?;
-            Ok((font_id.clone(), Rc::new(font)))
+        .flat_map(|(font_id, font_obj)| {
+            Font::from_pdf(doc, &Object::Dictionary((*font_obj).clone()))
+                .ok()
+                .map(|font| (font_id.clone(), Rc::new(font)))
         })
         .collect();
 
-    let font_map = font_map_result?;
+    // let font_map = font_map_result?;
 
     let raw = doc.get_page_content(page_id)?;
     let content = Content::decode(&raw)?;
@@ -398,7 +401,6 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
                 state.gs.text_state = Some(TextState::default());
             }
             ("Tm", [a, b, c, d, e, f]) => {
-                state.gs.text_state = Some(TextState::default());
                 if let Some(ts) = &mut state.gs.text_state {
                     let tm_params = CTM {
                         a: a.as_float()?,
@@ -421,7 +423,7 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
             }
 
             ("TJ", [text]) => {
-                draw_text(&scale, canvas, &mut state.gs, text.as_array()?)?;
+                draw_text(&scale, canvas, &mut state.gs, text.as_array()?);
             }
             ("ET", []) => {
                 state.gs.text_state = None;
@@ -536,6 +538,7 @@ pub fn draw_doc<T: Renderer>(doc: &Document, canvas: &mut Canvas<T>, page: u32) 
             }
 
             (o, a) => {
+                // canvas.set_transform(transform);
                 // eprintln!("op: {:?} {:?}", o, a);
             }
         }
