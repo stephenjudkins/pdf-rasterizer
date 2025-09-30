@@ -1,20 +1,14 @@
 use eyre::{Result, bail, eyre};
 use lopdf::{Document, Object, ObjectId};
-use ouroboros::self_referencing;
+use owned_ttf_parser::OwnedFace;
 use std::fmt;
 
 use crate::{FromPDF, get};
 
 pub struct Font {
     pub name: String,
-    pub font: InnerFont,
+    pub font: OwnedFace,
     pub widths: Vec<i64>,
-}
-
-impl Font {
-    pub fn face(&self) -> &rustybuzz::Face {
-        self.font.face()
-    }
 }
 
 impl fmt::Debug for Font {
@@ -49,26 +43,6 @@ impl<'a> FromPDF for Font {
     }
 }
 
-pub fn load_font(data: Vec<u8>) -> Result<InnerFont> {
-    InnerFontTryBuilder {
-        data: data,
-        face_builder: |data: &Vec<u8>| {
-            rustybuzz::Face::from_slice(data, 0).ok_or_else(|| eyre!("Could not parse font"))
-        },
-    }
-    .try_build()
-}
-
-#[self_referencing]
-pub struct InnerFont {
-    data: Vec<u8>,
-    #[borrows(data)]
-    #[covariant]
-    face: rustybuzz::Face<'this>,
-}
-
-impl InnerFont {
-    pub fn face(&self) -> &rustybuzz::Face {
-        self.borrow_face()
-    }
+pub fn load_font(data: Vec<u8>) -> Result<OwnedFace> {
+    OwnedFace::from_vec(data, 0).map_err(|_| eyre!("Could not parse font"))
 }

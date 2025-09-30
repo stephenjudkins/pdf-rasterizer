@@ -3,7 +3,7 @@ pub mod font;
 use eyre::{Result, eyre};
 use femtovg::{Canvas, Paint, Path, Renderer};
 use lopdf::Object;
-use rustybuzz::ttf_parser::OutlineBuilder;
+use owned_ttf_parser::{AsFaceRef, OutlineBuilder};
 
 use crate::{Coord, DeviceScale, GraphicsState, RenderSettings, TextState, transform_from};
 
@@ -79,18 +79,17 @@ pub fn draw_text<T: Renderer>(
                     .map(|b| u16::from_be_bytes([b[0], b[1]]));
 
                 for glyph_idx in glyph_ids {
-                    let glyph_id = rustybuzz::ttf_parser::GlyphId(glyph_idx);
+                    let glyph_id = owned_ttf_parser::GlyphId(glyph_idx);
 
                     let width: i64 = *font.widths.get(glyph_id.0 as usize).unwrap_or(&0);
 
-                    let face = font.face();
                     let mut path = FontPath {
                         path: &mut Path::new(),
                         ts: ts.clone(),
                         scale,
                     };
 
-                    match face.outline_glyph(glyph_id, &mut path) {
+                    match font.font.as_face_ref().outline_glyph(glyph_id, &mut path) {
                         Some(_) => {
                             let color = gs.non_stroke_color;
                             ts.position += width;
