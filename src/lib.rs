@@ -1,12 +1,13 @@
-use core::fmt;
 use std::{collections::HashMap, fmt::Debug, rc::Rc};
 
 use eyre::{Result, bail, eyre};
 
 pub mod offscreen;
 pub mod text;
+
 use femtovg::{Canvas, Color, FillRule, Paint, Path, Renderer};
 use lopdf::{Dictionary, Document, Object, ObjectId, content::Content};
+pub use text::font::Font;
 
 fn get<A: FromPDF>(doc: &Document, root: &Object) -> Result<A> {
     A::from_pdf(doc, root)
@@ -62,46 +63,6 @@ impl FromPDF for i64 {
     }
 }
 
-impl<'a> FromPDF for Font<'a> {
-    fn from_pdf(doc: &Document, root: &Object) -> Result<Self> {
-        let font = root.as_dict()?;
-        eprintln!("{:?}", font);
-        let descendant_fonts: Vec<ObjectId> = get(doc, font.get(b"DescendantFonts")?)?;
-        let descendent_font = doc.get_dictionary(match descendant_fonts[..] {
-            [id] => id,
-            _ => Err(eyre!("expected one DescendantFont"))?,
-        })?;
-        let descriptor =
-            doc.get_dictionary(descendent_font.get(b"FontDescriptor")?.as_reference()?)?;
-
-        let widths: Vec<f32> = match &descendent_font.get(b"W")?.as_array()?[..] {
-            [Object::Integer(0), Object::Array(ws)] => get(doc, &Object::Array(ws.clone()))?,
-            _ => bail!("Expected [0 [widths..]]"),
-        };
-
-        let content: Vec<u8> = get(doc, descriptor.get(b"FontFile2")?)?;
-
-        let font =
-            rusttype::Font::try_from_vec(content).ok_or_else(|| eyre!("could not load font"))?;
-
-        let name = get(doc, descriptor.get(b"FontName")?)?;
-
-        Ok(Font { name, font, widths })
-    }
-}
-
-pub struct Font<'a> {
-    pub name: String,
-    pub font: rusttype::Font<'a>,
-    pub widths: Vec<f32>,
-}
-
-impl fmt::Debug for Font<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Font").field("name", &self.name).finish()
-    }
-}
-
 #[derive(Debug)]
 pub struct TextMatrix {
     pub a: i64,
@@ -113,11 +74,11 @@ pub struct TextMatrix {
 }
 
 #[derive(Default, Debug, Clone)]
-pub struct TextState<'a> {
-    pub position: f32,
+pub struct TextState {
+    pub position: i64,
     pub size: f32,
     pub matrix: CTM,
-    pub font: Option<Rc<Font<'a>>>,
+    pub font: Option<Rc<Font>>,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -183,17 +144,17 @@ impl Debug for CTM {
 }
 
 #[derive(Clone, Debug)]
-pub struct GraphicsState<'a> {
+pub struct GraphicsState {
     pub ctm: CTM,
     pub stroke_color: Color,
     pub non_stroke_color: Color,
     pub path: Path,
-    pub text_state: Option<TextState<'a>>,
+    pub text_state: Option<TextState>,
     pub line_width: f32,
     pub current_point: Coord,
 }
 
-impl Default for GraphicsState<'_> {
+impl Default for GraphicsState {
     fn default() -> Self {
         Self {
             ctm: Default::default(),
@@ -208,12 +169,12 @@ impl Default for GraphicsState<'_> {
 }
 
 #[derive(Debug)]
-pub struct State<'a> {
-    pub gs: GraphicsState<'a>,
-    pub stack: Vec<GraphicsState<'a>>,
+pub struct State {
+    pub gs: GraphicsState,
+    pub stack: Vec<GraphicsState>,
 }
 
-impl Default for State<'_> {
+impl Default for State {
     fn default() -> Self {
         Self {
             gs: Default::default(),
@@ -326,14 +287,6 @@ pub fn draw_doc<T: Renderer>(
             &scale,
         ))
     };
-    // fn transform(xy: &Coord, ctm: &CTM, scale: &DeviceScale) -> Coord {
-    //     transform_from(xy, ctm, scale)
-    // }
-
-    // let mut tp = Path::new();
-    // tp.move_to(100., 100.);
-    // tp.line_to(200., 500.);
-    // canvas.stroke_path(&tp, &Paint::color(Color::black()));
 
     for op in content.operations {
         let o = op.operator.as_str();
@@ -365,7 +318,7 @@ pub fn draw_doc<T: Renderer>(
             }
 
             ("TJ", [text]) => {
-                text::draw_text(&scale, canvas, &mut state.gs, text.as_array()?)?;
+                text::draw_text(&scale, canvas, &mut state.gs, text.as_array()?, &settings)?;
             }
             ("ET", []) => {
                 state.gs.text_state = None;

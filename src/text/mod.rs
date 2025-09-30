@@ -1,26 +1,74 @@
-use eyre::{Result, eyre};
-use femtovg::{
-    Canvas, Color, ImageFlags, ImageSource, Paint, Path, Renderer,
-    img::{DynamicImage, Rgba},
-};
-use lopdf::Object;
-use rusttype::Scale;
+pub mod font;
 
-use crate::{Coord, DeviceScale, GraphicsState, transform_from};
+use eyre::{Result, eyre};
+use femtovg::{Canvas, Paint, Path, Renderer};
+use lopdf::Object;
+use rustybuzz::ttf_parser::OutlineBuilder;
+
+use crate::{Coord, DeviceScale, GraphicsState, RenderSettings, TextState, transform_from};
 
 const TEXT_SCALE: f32 = 1000.;
+
+fn tx(ts: &TextState, scale: &DeviceScale, Coord { x, y }: &Coord) -> Coord {
+    transform_from(
+        &Coord {
+            x: (x + (ts.position as f32)) / TEXT_SCALE * ts.size,
+            y: y / TEXT_SCALE * ts.size,
+        },
+        &ts.matrix,
+        scale,
+    )
+}
+
+struct FontPath<'a> {
+    pub path: &'a mut Path,
+    ts: TextState,
+    scale: &'a DeviceScale,
+}
+
+impl OutlineBuilder for FontPath<'_> {
+    fn move_to(&mut self, x: f32, y: f32) {
+        let xy = tx(&self.ts, &self.scale, &Coord { x, y });
+        self.path.move_to(xy.x, xy.y);
+    }
+
+    fn line_to(&mut self, x: f32, y: f32) {
+        let xy = tx(&self.ts, &self.scale, &Coord { x, y });
+        self.path.line_to(xy.x, xy.y);
+    }
+
+    fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+        let xy1 = tx(&self.ts, &self.scale, &Coord { x: x1, y: y1 });
+        let xy = tx(&self.ts, &self.scale, &Coord { x, y });
+        self.path.quad_to(xy1.x, xy1.y, xy.x, xy.y);
+    }
+
+    fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+        let xy1 = tx(&self.ts, &self.scale, &Coord { x: x1, y: y1 });
+        let xy2 = tx(&self.ts, &self.scale, &Coord { x: x2, y: y2 });
+        let xy = tx(&self.ts, &self.scale, &Coord { x, y });
+        self.path.bezier_to(xy1.x, xy1.y, xy2.x, xy2.y, xy.x, xy.y);
+        // self.bezier_to(x1, y1, x2, y2, x, y);
+    }
+
+    fn close(&mut self) {
+        self.path.close()
+    }
+}
 
 pub fn draw_text<T: Renderer>(
     scale: &DeviceScale,
     canvas: &mut Canvas<T>,
     gs: &mut GraphicsState,
     glyphs: &[Object],
+    render_settings: &RenderSettings,
 ) -> Result<()> {
     let ts = gs
         .text_state
         .as_mut()
         .ok_or_else(|| eyre!("no font state"))?;
     let font = ts.font.as_ref().ok_or_else(|| eyre!("no font sent"))?;
+    eprintln!("{glyphs:?}");
 
     for glyph in glyphs {
         match glyph {
@@ -30,74 +78,33 @@ pub fn draw_text<T: Renderer>(
                     .into_iter()
                     .map(|b| u16::from_be_bytes([b[0], b[1]]));
 
-                for glyph_id in glyph_ids {
-                    eprintln!("{glyph_id:?}");
-                    let Coord { x, y } = transform_from(
-                        &Coord {
-                            x: ts.position / TEXT_SCALE * ts.size,
-                            y: 0.,
-                        },
-                        &ts.matrix,
+                for glyph_idx in glyph_ids {
+                    let glyph_id = rustybuzz::ttf_parser::GlyphId(glyph_idx);
+
+                    let width: i64 = *font.widths.get(glyph_id.0 as usize).unwrap_or(&0);
+
+                    let face = font.face();
+                    let mut path = FontPath {
+                        path: &mut Path::new(),
+                        ts: ts.clone(),
                         scale,
-                    );
+                    };
 
-                    let width: f32 = *font.widths.get(glyph_id as usize).unwrap_or(&0.);
-                    ts.position += width;
-
-                    let glyph = font
-                        .font
-                        .glyph(rusttype::GlyphId(glyph_id))
-                        .scaled(Scale::uniform(ts.size * scale.scale));
-
-                    let positioned = glyph.positioned(rusttype::point(0., 0.));
-
-                    match positioned.pixel_bounding_box() {
-                        Some(metrics) => {
-                            let mut image = DynamicImage::new_rgba8(
-                                metrics.width() as u32,
-                                metrics.height() as u32,
-                            )
-                            .to_rgba8();
-                            let Color { r, g, b, a } = gs.non_stroke_color;
-                            positioned.draw(|x, y, v| {
-                                image.put_pixel(
-                                    x as u32,
-                                    y as u32,
-                                    Rgba([
-                                        (r * 255.) as u8,
-                                        (g * 255.) as u8,
-                                        (b * 255.) as u8,
-                                        (v * a * 255.) as u8,
-                                    ]),
-                                )
-                            });
-
-                            let w = metrics.width() as f32;
-                            let h = metrics.height() as f32;
-                            let x0 = x + (metrics.min.x as f32);
-                            let y0 = y + (metrics.min.y as f32);
-                            let image_id = canvas.create_image(
-                                ImageSource::try_from(&DynamicImage::from(image))?,
-                                ImageFlags::REPEAT_Y,
-                            )?;
-                            let img_paint = Paint::image(
-                                image_id,
-                                x0,
-                                y0,
-                                metrics.width() as f32,
-                                metrics.height() as f32,
-                                0.0,
-                                1.0,
+                    match face.outline_glyph(glyph_id, &mut path) {
+                        Some(_) => {
+                            let color = gs.non_stroke_color;
+                            ts.position += width;
+                            canvas.fill_path(
+                                &mut path.path,
+                                &Paint::color(color).with_anti_alias(render_settings.anti_alias),
                             );
-                            let mut path = Path::new();
-                            path.rect(x0, y0, w, h);
-                            canvas.fill_path(&path, &img_paint);
                         }
                         _ => (),
                     }
                 }
             }
-            Object::Real(s) => ts.position -= s,
+            // Object::Real(s) => ts.position += s,
+            Object::Integer(i) => ts.position -= i,
             _ => (),
         }
     }
