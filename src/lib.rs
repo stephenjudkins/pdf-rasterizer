@@ -75,7 +75,7 @@ pub struct TextMatrix {
 
 #[derive(Default, Debug, Clone)]
 pub struct TextState {
-    pub position: i64,
+    pub position: f32,
     pub size: f32,
     pub matrix: CTM,
     pub font: Option<Rc<Font>>,
@@ -190,21 +190,13 @@ pub struct RenderSettings {
 
 impl Default for RenderSettings {
     fn default() -> Self {
-        Self { anti_alias: false }
+        Self { anti_alias: true }
     }
 }
 
-pub fn dimensions(page: &Dictionary) -> Result<(u32, u32)> {
-    match page.get(b"MediaBox")?.as_array()?.as_slice() {
-        &[
-            Object::Integer(x),
-            Object::Integer(y),
-            Object::Integer(w),
-            Object::Integer(h),
-        ] if x == 0 && y == 0 => match (w.try_into(), h.try_into()) {
-            (Ok(w), Ok(h)) => Ok((w, h)),
-            (w, h) => bail!("Expected w, h > 0, got {:?}", (w, h)),
-        },
+pub fn dimensions(page: &Dictionary) -> Result<(f32, f32)> {
+    match &*page.get(b"MediaBox")?.as_array()?.clone() {
+        [_, _, w, h] => Ok((w.as_float()?, h.as_float()?)),
         other => bail!("Expected [0 0 w h], but {:?}", other),
     }
 }
@@ -230,10 +222,10 @@ pub fn draw_doc<T: Renderer>(
         .ok_or_else(|| eyre!("No such page"))?
         .clone();
     let page_dict = doc.get_dictionary(page_id)?;
-    let size: (u32, u32) = dimensions(page_dict)?;
+    let size: (f32, f32) = dimensions(page_dict)?;
     let scale = DeviceScale {
         height: canvas.height(),
-        scale: canvas.width() as f32 / size.0 as f32,
+        scale: canvas.width() as f32 / size.0,
     };
 
     let fonts = doc.get_page_fonts(page_id)?;
@@ -241,8 +233,6 @@ pub fn draw_doc<T: Renderer>(
     let resource_dict = doc
         .get_dict_in_dict(page_dict, b"Resources")
         .unwrap_or(&default_dict);
-
-    eprintln!("{resource_dict:?}");
 
     let ext_gstate_map: HashMap<Vec<u8>, Dictionary> = match resource_dict.get(b"ExtGState") {
         Ok(obj) => match obj.as_dict() {
@@ -269,8 +259,6 @@ pub fn draw_doc<T: Renderer>(
                 .map(|font| (font_id.clone(), Rc::new(font)))
         })
         .collect();
-
-    // let font_map = font_map_result?;
 
     let raw = doc.get_page_content(page_id)?;
     let content = Content::decode(&raw)?;
@@ -306,6 +294,7 @@ pub fn draw_doc<T: Renderer>(
                         f: f.as_float()?,
                     };
                     ts.matrix = concat(&state.gs.ctm, &tm_params);
+                    eprintln!("{:?}", ts.matrix);
                 }
             }
             ("Tf", [Object::Name(n), size]) => {
@@ -318,7 +307,7 @@ pub fn draw_doc<T: Renderer>(
             }
 
             ("TJ", [text]) => {
-                text::draw_text(&scale, canvas, &mut state.gs, text.as_array()?, &settings)?;
+                text::draw_text(&scale, canvas, &mut state.gs, text.as_array()?, &settings);
             }
             ("ET", []) => {
                 state.gs.text_state = None;
@@ -453,7 +442,6 @@ pub fn draw_doc<T: Renderer>(
             }
 
             (_o, _a) => {
-                // canvas.set_transform(transform);
                 // eprintln!("op: {:?} {:?}", _o, _a);
             }
         }

@@ -1,6 +1,6 @@
 use eyre::{Result, bail, eyre};
 use lopdf::{Document, Object, ObjectId};
-use owned_ttf_parser::OwnedFace;
+use owned_ttf_parser::{AsFaceRef, OwnedFace};
 use std::fmt;
 
 use crate::{FromPDF, get};
@@ -8,7 +8,7 @@ use crate::{FromPDF, get};
 pub struct Font {
     pub name: String,
     pub font: OwnedFace,
-    pub widths: Vec<i64>,
+    pub widths: Vec<f32>,
 }
 
 impl fmt::Debug for Font {
@@ -28,8 +28,11 @@ impl<'a> FromPDF for Font {
         let descriptor =
             doc.get_dictionary(descendent_font.get(b"FontDescriptor")?.as_reference()?)?;
 
-        let widths: Vec<i64> = match &descendent_font.get(b"W")?.as_array()?[..] {
-            [Object::Integer(0), Object::Array(ws)] => get(doc, &Object::Array(ws.clone()))?,
+        let widths: Vec<f32> = match &descendent_font.get(b"W")?.as_array()?[..] {
+            [Object::Integer(0), Object::Array(ws)] => ws
+                .iter()
+                .map(|i| i.as_float().map_err(|e| eyre!("{e:?}")))
+                .collect::<Result<Vec<_>>>()?,
             _ => bail!("Expected [0 [widths..]]"),
         };
 
@@ -44,5 +47,7 @@ impl<'a> FromPDF for Font {
 }
 
 pub fn load_font(data: Vec<u8>) -> Result<OwnedFace> {
-    OwnedFace::from_vec(data, 0).map_err(|_| eyre!("Could not parse font"))
+    let o = OwnedFace::from_vec(data, 0).map_err(|_| eyre!("Could not parse font"))?;
+
+    Ok(o)
 }

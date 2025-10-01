@@ -1,5 +1,6 @@
 use eyre::{Result, WrapErr, eyre};
 use image::{ImageBuffer, Rgba, RgbaImage};
+use rasterizer::RenderSettings;
 use std::fs;
 use std::{env, process::ExitCode};
 
@@ -7,8 +8,8 @@ use lopdf::Document;
 use pdfium_render::prelude::*;
 use rasterizer::offscreen::pdf_to_rgba_image;
 
-const PAGE: u32 = 1;
-const DEFAULT_SCALE: f32 = 2.0;
+const PAGE: u16 = 1;
+const DEFAULT_SCALE: f32 = 3.0;
 
 async fn compare_pdf_renderers(pdf_path: &str) -> Result<()> {
     let bytes =
@@ -16,7 +17,8 @@ async fn compare_pdf_renderers(pdf_path: &str) -> Result<()> {
 
     // Render with our rasterizer
     let doc = Document::load_mem(&bytes).wrap_err("Failed to parse PDF document")?;
-    let our_image = pdf_to_rgba_image(&doc, PAGE, DEFAULT_SCALE).await?;
+    let render_settings = RenderSettings { anti_alias: true };
+    let our_image = pdf_to_rgba_image(&doc, PAGE as u32, DEFAULT_SCALE, &render_settings).await?;
     our_image
         .save("actual.png")
         .wrap_err("Failed to save actual.png")?;
@@ -31,8 +33,8 @@ async fn compare_pdf_renderers(pdf_path: &str) -> Result<()> {
 
     let page = document
         .pages()
-        .get(0)
-        .wrap_err("Failed to get first page from pdfium document")?;
+        .get(PAGE - 1)
+        .wrap_err("Failed to get page from pdfium document")?;
 
     let width = (page.width().value * DEFAULT_SCALE) as u32;
     let height = (page.height().value * DEFAULT_SCALE) as u32;
@@ -42,9 +44,9 @@ async fn compare_pdf_renderers(pdf_path: &str) -> Result<()> {
         .set_target_height(height as i32)
         .set_maximum_width(width as i32)
         .set_maximum_height(height as i32)
-        .set_path_smoothing(false)
-        .set_image_smoothing(false)
-        .set_text_smoothing(false)
+        .set_path_smoothing(render_settings.anti_alias)
+        .set_image_smoothing(render_settings.anti_alias)
+        .set_text_smoothing(render_settings.anti_alias)
         .set_format(PdfBitmapFormat::BGRx)
         .disable_native_text_rendering(true);
 
@@ -85,9 +87,9 @@ fn compare_images(actual_img: &RgbaImage, expected_img: &RgbaImage) -> Result<()
         total_diff += pixel_diff as u64;
 
         // Scale difference for visibility (multiply by 3 to make differences more apparent)
-        let scaled_diff = (pixel_diff as u16 * 3).min(255) as u8;
+        // let scaled_diff = (pixel_diff as u16 * 3).min(255) as u8;
 
-        diff_img.put_pixel(x, y, Rgba([scaled_diff, scaled_diff, scaled_diff, 255]));
+        diff_img.put_pixel(x, y, Rgba([r_diff, g_diff, b_diff, 255]));
     }
 
     diff_img

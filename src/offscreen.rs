@@ -4,7 +4,12 @@ use femtovg::{Canvas, Color, renderer::WGPURenderer};
 use image::{ImageBuffer, RgbaImage};
 use lopdf::Document;
 
-pub async fn pdf_to_rgba_image(doc: &Document, page: u32, scale: f32) -> Result<RgbaImage> {
+pub async fn pdf_to_rgba_image(
+    doc: &Document,
+    page: u32,
+    scale: f32,
+    render_settings: &RenderSettings,
+) -> Result<RgbaImage> {
     let page_id = doc
         .get_pages()
         .get(&page)
@@ -61,10 +66,10 @@ pub async fn pdf_to_rgba_image(doc: &Document, page: u32, scale: f32) -> Result<
     let renderer = WGPURenderer::new(device.clone(), queue.clone());
     let mut canvas = Canvas::new(renderer)?;
 
-    canvas.set_size(width, height, 1.0);
+    canvas.set_size(width, height, 2.0);
     canvas.clear_rect(0, 0, width, height, Color::white());
 
-    draw_doc(doc, &mut canvas, page, &crate::RenderSettings::default())?;
+    draw_doc(doc, &mut canvas, page, &render_settings)?;
 
     let commands = canvas.flush_to_surface(&texture);
     queue.submit(Some(commands));
