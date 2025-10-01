@@ -72,7 +72,7 @@ fn compare_images(actual_img: &RgbaImage, expected_img: &RgbaImage) -> Result<()
     }
 
     let mut diff_img: RgbaImage = ImageBuffer::new(actual_width, actual_height);
-    let mut total_diff = 0u64;
+    let mut _total_diff = 0u64;
     let mut max_diff = 0u8;
 
     for (x, y, actual_pixel) in actual_img.enumerate_pixels() {
@@ -84,7 +84,7 @@ fn compare_images(actual_img: &RgbaImage, expected_img: &RgbaImage) -> Result<()
 
         let pixel_diff = r_diff.max(g_diff).max(b_diff);
         max_diff = max_diff.max(pixel_diff);
-        total_diff += pixel_diff as u64;
+        _total_diff += pixel_diff as u64;
 
         // Scale difference for visibility (multiply by 3 to make differences more apparent)
         // let scaled_diff = (pixel_diff as u16 * 3).min(255) as u8;

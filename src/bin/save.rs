@@ -3,6 +3,7 @@ use std::fs;
 use std::{env, process::ExitCode};
 
 use lopdf::Document;
+use rasterizer::RenderSettings;
 use rasterizer::offscreen::pdf_to_rgba_image;
 
 const PAGE: u32 = 1;
@@ -13,7 +14,7 @@ async fn save_pdf_to_png(pdf_path: &str, output_path: &str) -> Result<()> {
         fs::read(pdf_path).wrap_err_with(|| eyre!("Failed to read PDF file: {}", pdf_path))?;
     let doc = Document::load_mem(&bytes).wrap_err("Failed to parse PDF document")?;
 
-    let image = pdf_to_rgba_image(&doc, PAGE, DEFAULT_SCALE).await?;
+    let image = pdf_to_rgba_image(&doc, PAGE, DEFAULT_SCALE, &RenderSettings::default()).await?;
 
     image
         .save(output_path)

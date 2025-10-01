@@ -1,8 +1,9 @@
 use crate::*;
 use eyre::{Result, eyre};
-use femtovg::{Canvas, Color, renderer::WGPURenderer};
 use image::{ImageBuffer, RgbaImage};
 use lopdf::Document;
+use vello::util::RenderContext;
+use vello::{Renderer, RendererOptions, Scene};
 
 pub async fn pdf_to_rgba_image(
     doc: &Document,
@@ -22,19 +23,26 @@ pub async fn pdf_to_rgba_image(
     let width = (size.0 as f32 * scale) as u32;
     let height = (size.1 as f32 * scale) as u32;
 
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::default(),
-            compatible_surface: None,
-            force_fallback_adapter: false,
-        })
-        .await
-        .ok_or_else(|| eyre!("failed to get adapter"))?;
+    let mut render_cx = RenderContext::new();
 
-    let (device, queue) = adapter
-        .request_device(&wgpu::DeviceDescriptor::default(), None)
-        .await?;
+    let device_id = render_cx
+        .device(None)
+        .await
+        .ok_or_else(|| eyre!("No compatible device found"))?;
+
+    let mut renderer = Renderer::new(
+        &render_cx.devices[device_id].device,
+        RendererOptions {
+            use_cpu: false,
+            antialiasing_support: vello::AaSupport::all(),
+            num_init_threads: None,
+            pipeline_cache: None,
+        },
+    )
+    .unwrap();
+
+    let device = &render_cx.devices[0].device;
+    let queue = &render_cx.devices[0].queue;
 
     let texture_desc = wgpu::TextureDescriptor {
         size: wgpu::Extent3d {
@@ -46,11 +54,14 @@ pub async fn pdf_to_rgba_image(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::RENDER_ATTACHMENT,
+        usage: wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::STORAGE_BINDING,
         label: Some("Render Texture"),
         view_formats: &[],
     };
     let texture = device.create_texture(&texture_desc);
+    let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
     let u32_size = std::mem::size_of::<u32>() as u32;
     let unpadded_bytes_per_row = u32_size * width;
@@ -63,16 +74,30 @@ pub async fn pdf_to_rgba_image(
         mapped_at_creation: false,
     });
 
-    let renderer = WGPURenderer::new(device.clone(), queue.clone());
-    let mut canvas = Canvas::new(renderer)?;
+    let mut scene = Scene::new();
 
-    canvas.set_size(width, height, 2.0);
-    canvas.clear_rect(0, 0, width, height, Color::white());
+    use kurbo::{Affine, Rect};
+    use peniko::Color;
+    scene.fill(
+        peniko::Fill::NonZero,
+        Affine::IDENTITY,
+        Color::WHITE,
+        None,
+        &Rect::new(0.0, 0.0, width as f64, height as f64),
+    );
 
-    draw_doc(doc, &mut canvas, page, &render_settings)?;
+    draw_doc(doc, &mut scene, width, height, page, &render_settings)?;
 
-    let commands = canvas.flush_to_surface(&texture);
-    queue.submit(Some(commands));
+    let render_params = vello::RenderParams {
+        base_color: peniko::Color::BLACK,
+        width,
+        height,
+        antialiasing_method: vello::AaConfig::Msaa16,
+    };
+
+    renderer
+        .render_to_texture(device, queue, &scene, &texture_view, &render_params)
+        .map_err(|e| eyre!("Render error: {:?}", e))?;
 
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("Copy Encoder"),

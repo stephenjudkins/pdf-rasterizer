@@ -1,6 +1,6 @@
 use eyre::{Result, bail, eyre};
 use lopdf::{Document, Object, ObjectId};
-use owned_ttf_parser::{AsFaceRef, OwnedFace};
+use owned_ttf_parser::OwnedFace;
 use std::fmt;
 
 use crate::{FromPDF, get};

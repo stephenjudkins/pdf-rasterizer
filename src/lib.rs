@@ -5,9 +5,11 @@ use eyre::{Result, bail, eyre};
 pub mod offscreen;
 pub mod text;
 
-use femtovg::{Canvas, Color, FillRule, Paint, Path, Renderer};
+use kurbo::BezPath;
 use lopdf::{Dictionary, Document, Object, ObjectId, content::Content};
+use peniko::{Color, Fill};
 pub use text::font::Font;
+use vello::Scene;
 
 fn get<A: FromPDF>(doc: &Document, root: &Object) -> Result<A> {
     A::from_pdf(doc, root)
@@ -148,7 +150,7 @@ pub struct GraphicsState {
     pub ctm: CTM,
     pub stroke_color: Color,
     pub non_stroke_color: Color,
-    pub path: Path,
+    pub path: BezPath,
     pub text_state: Option<TextState>,
     pub line_width: f32,
     pub current_point: Coord,
@@ -158,9 +160,9 @@ impl Default for GraphicsState {
     fn default() -> Self {
         Self {
             ctm: Default::default(),
-            stroke_color: Color::black(),
-            non_stroke_color: Color::black(),
-            path: Path::new(),
+            stroke_color: Color::BLACK,
+            non_stroke_color: Color::BLACK,
+            path: BezPath::new(),
             text_state: None,
             line_width: 1.,
             current_point: Coord::default(),
@@ -207,12 +209,19 @@ pub struct DeviceScale {
 }
 
 fn to_color(r: &Object, g: &Object, b: &Object) -> Result<Color> {
-    Ok(Color::rgbf(r.as_float()?, g.as_float()?, b.as_float()?))
+    Ok(Color::new([
+        r.as_float()?,
+        g.as_float()?,
+        b.as_float()?,
+        1.0,
+    ]))
 }
 
-pub fn draw_doc<T: Renderer>(
+pub fn draw_doc(
     doc: &Document,
-    canvas: &mut Canvas<T>,
+    scene: &mut Scene,
+    width: u32,
+    height: u32,
     page: u32,
     settings: &RenderSettings,
 ) -> Result<()> {
@@ -224,8 +233,8 @@ pub fn draw_doc<T: Renderer>(
     let page_dict = doc.get_dictionary(page_id)?;
     let size: (f32, f32) = dimensions(page_dict)?;
     let scale = DeviceScale {
-        height: canvas.height(),
-        scale: canvas.width() as f32 / size.0,
+        height,
+        scale: width as f32 / size.0,
     };
 
     let fonts = doc.get_page_fonts(page_id)?;
@@ -307,7 +316,7 @@ pub fn draw_doc<T: Renderer>(
             }
 
             ("TJ", [text]) => {
-                text::draw_text(&scale, canvas, &mut state.gs, text.as_array()?, &settings);
+                text::draw_text(&scale, scene, &mut state.gs, text.as_array()?, &settings)?;
             }
             ("ET", []) => {
                 state.gs.text_state = None;
@@ -334,43 +343,53 @@ pub fn draw_doc<T: Renderer>(
                 })?;
             }
             ("scn", [r, g, b]) => {
-                let mut next = to_color(r, g, b)?;
-                next.set_alphaf(state.gs.non_stroke_color.a);
-                state.gs.non_stroke_color = next;
+                let next = to_color(r, g, b)?;
+                state.gs.non_stroke_color = Color::new([
+                    next.components[0],
+                    next.components[1],
+                    next.components[2],
+                    state.gs.non_stroke_color.components[3],
+                ]);
             }
             ("SCN", [r, g, b]) => {
-                let mut next = to_color(r, g, b)?;
-                next.set_alphaf(state.gs.stroke_color.a);
-                state.gs.stroke_color = next;
+                let next = to_color(r, g, b)?;
+                state.gs.stroke_color = Color::new([
+                    next.components[0],
+                    next.components[1],
+                    next.components[2],
+                    state.gs.stroke_color.components[3],
+                ]);
             }
             ("m", [x, y]) => {
                 let xy = transform(&state, &x, y)?;
-                state.gs.path.move_to(xy.x, xy.y);
+                state.gs.path.move_to((xy.x as f64, xy.y as f64));
                 state.gs.current_point = xy;
             }
             ("l", [x, y]) => {
                 let xy = transform(&state, &x, y)?;
-                state.gs.path.line_to(xy.x, xy.y);
+                state.gs.path.line_to((xy.x as f64, xy.y as f64));
                 state.gs.current_point = xy;
             }
             ("v", [x2, y2, x3, y3]) => {
                 let xy1 = state.gs.current_point;
                 let xy2 = transform(&state, &x2, &y2)?;
                 let xy3 = transform(&state, &x3, &y3)?;
-                state
-                    .gs
-                    .path
-                    .bezier_to(xy1.x, xy1.y, xy2.x, xy2.y, xy3.x, xy3.y);
+                state.gs.path.curve_to(
+                    (xy1.x as f64, xy1.y as f64),
+                    (xy2.x as f64, xy2.y as f64),
+                    (xy3.x as f64, xy3.y as f64),
+                );
                 state.gs.current_point = xy3;
             }
             ("c", [x1, y1, x2, y2, x3, y3]) => {
                 let xy1 = transform(&state, &x1, &y1)?;
                 let xy2 = transform(&state, &x2, &y2)?;
                 let xy3 = transform(&state, &x3, &y3)?;
-                state
-                    .gs
-                    .path
-                    .bezier_to(xy1.x, xy1.y, xy2.x, xy2.y, xy3.x, xy3.y);
+                state.gs.path.curve_to(
+                    (xy1.x as f64, xy1.y as f64),
+                    (xy2.x as f64, xy2.y as f64),
+                    (xy3.x as f64, xy3.y as f64),
+                );
                 state.gs.current_point = xy3;
             }
             ("re", [xo, yo, wo, ho]) => {
@@ -384,59 +403,81 @@ pub fn draw_doc<T: Renderer>(
                     x: xy1.x - xy0.x,
                     y: xy1.y - xy0.y,
                 };
-                state.gs.path.rect(xy0.x, xy0.y, wh.x, wh.y);
+                use kurbo::{Rect, Shape};
+                let rect = Rect::new(
+                    xy0.x as f64,
+                    xy0.y as f64,
+                    (xy0.x + wh.x) as f64,
+                    (xy0.y + wh.y) as f64,
+                );
+                state.gs.path.extend(rect.path_elements(0.1));
             }
             ("h", []) => {
-                state.gs.path.close();
+                state.gs.path.close_path();
             }
             ("f" | "f*", []) => {
                 let fill_rule = if o == "f" {
-                    FillRule::NonZero
+                    Fill::NonZero
                 } else {
-                    FillRule::EvenOdd
+                    Fill::EvenOdd
                 };
-                canvas.fill_path(
+                use kurbo::Affine;
+                scene.fill(
+                    fill_rule,
+                    Affine::IDENTITY,
+                    state.gs.non_stroke_color,
+                    None,
                     &state.gs.path,
-                    &Paint::color(state.gs.non_stroke_color)
-                        .with_fill_rule(fill_rule)
-                        .with_anti_alias(settings.anti_alias),
                 );
-                state.gs.path = Path::new();
+                state.gs.path = BezPath::new();
             }
             ("w", [lw]) => {
                 state.gs.line_width = lw.as_float()?;
             }
             ("S", []) => {
-                canvas.stroke_path(
+                use kurbo::Affine;
+                use peniko::kurbo::Stroke;
+                let stroke = Stroke::new(state.gs.line_width as f64 * scale.scale as f64);
+                scene.stroke(
+                    &stroke,
+                    Affine::IDENTITY,
+                    state.gs.stroke_color,
+                    None,
                     &state.gs.path,
-                    &Paint::color(state.gs.stroke_color)
-                        .with_line_width(state.gs.line_width * scale.scale)
-                        .with_anti_alias(settings.anti_alias),
                 );
-                state.gs.path = Path::new();
+                state.gs.path = BezPath::new();
             }
             ("B", []) => {
-                canvas.fill_path(
+                use kurbo::Affine;
+                use peniko::kurbo::Stroke;
+                scene.fill(
+                    Fill::NonZero,
+                    Affine::IDENTITY,
+                    state.gs.non_stroke_color,
+                    None,
                     &state.gs.path,
-                    &Paint::color(state.gs.non_stroke_color)
-                        .with_fill_rule(FillRule::NonZero)
-                        .with_anti_alias(settings.anti_alias),
                 );
-                canvas.stroke_path(
+                let stroke = Stroke::new(state.gs.line_width as f64 * scale.scale as f64);
+                scene.stroke(
+                    &stroke,
+                    Affine::IDENTITY,
+                    state.gs.stroke_color,
+                    None,
                     &state.gs.path,
-                    &Paint::color(state.gs.stroke_color)
-                        .with_line_width(state.gs.line_width * scale.scale)
-                        .with_anti_alias(settings.anti_alias),
                 );
-                state.gs.path = Path::new();
+                state.gs.path = BezPath::new();
             }
             ("gs", [Object::Name(name)]) => {
                 if let Some(gstate_dict) = ext_gstate_map.get(name) {
                     if let Some(ca) = gstate_dict.get(b"ca").and_then(|ca| ca.as_float()).ok() {
-                        state.gs.non_stroke_color.set_alphaf(ca);
+                        let c = state.gs.non_stroke_color;
+                        state.gs.non_stroke_color =
+                            Color::new([c.components[0], c.components[1], c.components[2], ca]);
                     }
                     if let Some(ca) = gstate_dict.get(b"CA").and_then(|ca| ca.as_float()).ok() {
-                        state.gs.stroke_color.set_alphaf(ca);
+                        let c = state.gs.stroke_color;
+                        state.gs.stroke_color =
+                            Color::new([c.components[0], c.components[1], c.components[2], ca]);
                     }
                 }
             }

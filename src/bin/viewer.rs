@@ -4,11 +4,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::{env, process::ExitCode};
 
-use femtovg::Color;
-use femtovg::{Canvas, renderer::WGPURenderer};
 use lopdf::Document;
 use rasterizer::*;
-use wgpu::{Queue, Surface};
+use vello::{AaConfig, Renderer, RendererOptions, Scene};
+use wgpu::{Device, Queue, Surface};
 use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
 use winit::window::{Window, WindowAttributes};
@@ -19,38 +18,66 @@ struct App {
     doc: Document,
     renderer: Option<Mutex<AppRenderer>>,
 }
+
 struct AppRenderer {
     window: Arc<Window>,
-    canvas: Canvas<WGPURenderer>,
+    renderer: Renderer,
     surface: Surface<'static>,
     queue: Queue,
+    device: Device,
 }
 
 impl AppRenderer {
     fn draw(&mut self, doc: &Document) -> Result<()> {
         let size = self.window.inner_size();
-        let canvas = &mut self.canvas;
-        canvas.set_size(size.width, size.height, self.window.scale_factor() as f32);
-        canvas.clear_rect(0, 0, size.width, size.height, Color::white());
-        draw_doc(doc, canvas, PAGE, &RenderSettings::default())?;
 
-        canvas.save();
-        canvas.reset();
+        let mut scene = Scene::new();
+
+        use kurbo::{Affine, Rect};
+        use peniko::Color;
+        scene.fill(
+            peniko::Fill::NonZero,
+            Affine::IDENTITY,
+            Color::WHITE,
+            None,
+            &Rect::new(0.0, 0.0, size.width as f64, size.height as f64),
+        );
+
+        draw_doc(
+            doc,
+            &mut scene,
+            size.width,
+            size.height,
+            PAGE,
+            &RenderSettings::default(),
+        )?;
+
         let frame = self
             .surface
             .get_current_texture()
             .wrap_err_with(|| eyre!("unable to get next texture from swapchain"))?;
-        let commands = canvas.flush_to_surface(&frame.texture);
 
-        // canvas.scissor(x, y, w, h);
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
-        self.queue.submit(Some(commands));
+        let render_params = vello::RenderParams {
+            base_color: Color::WHITE,
+            width: size.width,
+            height: size.height,
+            antialiasing_method: AaConfig::Msaa16,
+        };
+
+        self.renderer
+            .render_to_texture(&self.device, &self.queue, &scene, &view, &render_params)
+            .map_err(|e| eyre!("Render error: {:?}", e))?;
 
         frame.present();
 
         Ok(())
     }
 }
+
 async fn start(window: Arc<Window>) -> Result<AppRenderer> {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
     let adapter = instance
@@ -79,15 +106,23 @@ async fn start(window: Arc<Window>) -> Result<AppRenderer> {
     surface_config.format = swapchain_format;
     surface.configure(&device, &surface_config);
 
-    let renderer = WGPURenderer::new(device, queue.clone());
-
-    let canvas = Canvas::new(renderer)?;
+    let renderer = Renderer::new(
+        &device,
+        RendererOptions {
+            use_cpu: false,
+            antialiasing_support: vello::AaSupport::all(),
+            num_init_threads: None,
+            pipeline_cache: None,
+        },
+    )
+    .map_err(|e| eyre!("Failed to create renderer: {:?}", e))?;
 
     Ok(AppRenderer {
         window: window,
-        canvas: canvas,
+        renderer: renderer,
         queue: queue,
         surface: surface,
+        device: device,
     })
 }
 
@@ -146,8 +181,8 @@ fn go(path: &str, scale: f32) -> Result<()> {
         renderer: None,
         doc: doc,
         size: PhysicalSize {
-            width: size.0 * scale as u32,
-            height: size.1 * scale as u32,
+            width: (size.0 * scale) as u32,
+            height: (size.1 * scale) as u32,
         },
     };
     event_loop.run_app(&mut app)?;

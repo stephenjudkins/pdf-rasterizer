@@ -1,16 +1,18 @@
 pub mod font;
 
 use eyre::{Result, eyre};
-use femtovg::{Canvas, Paint, Path, Renderer};
+use kurbo::BezPath;
 use lopdf::Object;
 use owned_ttf_parser::{AsFaceRef, OutlineBuilder};
+use peniko::Fill;
+use vello::Scene;
 
 use crate::{Coord, DeviceScale, GraphicsState, RenderSettings, TextState, transform_from};
 
 const TEXT_SCALE: f32 = 1000.;
 
 struct FontPath<'a> {
-    pub path: &'a mut Path,
+    pub path: &'a mut BezPath,
     units_per_em: u16,
     ts: TextState,
     scale: &'a DeviceScale,
@@ -33,38 +35,43 @@ impl<'a> FontPath<'a> {
 impl OutlineBuilder for FontPath<'_> {
     fn move_to(&mut self, x: f32, y: f32) {
         let xy = self.tx(&Coord { x, y });
-        self.path.move_to(xy.x, xy.y);
+        self.path.move_to((xy.x as f64, xy.y as f64));
     }
 
     fn line_to(&mut self, x: f32, y: f32) {
         let xy = self.tx(&Coord { x, y });
-        self.path.line_to(xy.x, xy.y);
+        self.path.line_to((xy.x as f64, xy.y as f64));
     }
 
     fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
         let xy1 = self.tx(&Coord { x: x1, y: y1 });
         let xy = self.tx(&Coord { x, y });
-        self.path.quad_to(xy1.x, xy1.y, xy.x, xy.y);
+        self.path
+            .quad_to((xy1.x as f64, xy1.y as f64), (xy.x as f64, xy.y as f64));
     }
 
     fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
         let xy1 = self.tx(&Coord { x: x1, y: y1 });
         let xy2 = self.tx(&Coord { x: x2, y: y2 });
         let xy = self.tx(&Coord { x, y });
-        self.path.bezier_to(xy1.x, xy1.y, xy2.x, xy2.y, xy.x, xy.y);
+        self.path.curve_to(
+            (xy1.x as f64, xy1.y as f64),
+            (xy2.x as f64, xy2.y as f64),
+            (xy.x as f64, xy.y as f64),
+        );
     }
 
     fn close(&mut self) {
-        self.path.close()
+        self.path.close_path()
     }
 }
 
-pub fn draw_text<T: Renderer>(
+pub fn draw_text(
     scale: &DeviceScale,
-    canvas: &mut Canvas<T>,
+    scene: &mut Scene,
     gs: &mut GraphicsState,
     glyphs: &[Object],
-    render_settings: &RenderSettings,
+    _render_settings: &RenderSettings,
 ) -> Result<()> {
     let ts = gs
         .text_state
@@ -87,7 +94,7 @@ pub fn draw_text<T: Renderer>(
 
                     let width: f32 = *font.widths.get(glyph_id.0 as usize).unwrap_or(&0.);
                     let mut path = FontPath {
-                        path: &mut Path::new(),
+                        path: &mut BezPath::new(),
                         units_per_em,
                         ts: ts.clone(),
                         scale,
@@ -95,12 +102,13 @@ pub fn draw_text<T: Renderer>(
 
                     match font.font.as_face_ref().outline_glyph(glyph_id, &mut path) {
                         Some(_) => {
-                            canvas.fill_path(
-                                &mut path.path,
-                                &Paint::color(gs.non_stroke_color)
-                                    .with_anti_alias(render_settings.anti_alias)
-                                    .with_fill_rule(femtovg::FillRule::EvenOdd)
-                                    .with_stencil_strokes(true),
+                            use kurbo::Affine;
+                            scene.fill(
+                                Fill::EvenOdd,
+                                Affine::IDENTITY,
+                                gs.non_stroke_color,
+                                None,
+                                &*path.path,
                             );
                         }
                         _ => (),
