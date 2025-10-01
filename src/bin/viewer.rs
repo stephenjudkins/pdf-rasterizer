@@ -25,11 +25,34 @@ struct AppRenderer {
     surface: Surface<'static>,
     queue: Queue,
     device: Device,
+    intermediate_texture: wgpu::Texture,
+    intermediate_format: wgpu::TextureFormat,
 }
 
 impl AppRenderer {
     fn draw(&mut self, doc: &Document) -> Result<()> {
         let size = self.window.inner_size();
+
+        if self.intermediate_texture.width() != size.width
+            || self.intermediate_texture.height() != size.height
+        {
+            self.intermediate_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                size: wgpu::Extent3d {
+                    width: size.width,
+                    height: size.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.intermediate_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::STORAGE_BINDING
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                label: Some("Intermediate RGBA Texture"),
+                view_formats: &[],
+            });
+        }
 
         let mut scene = Scene::new();
 
@@ -52,13 +75,8 @@ impl AppRenderer {
             &RenderSettings::default(),
         )?;
 
-        let frame = self
-            .surface
-            .get_current_texture()
-            .wrap_err_with(|| eyre!("unable to get next texture from swapchain"))?;
-
-        let view = frame
-            .texture
+        let intermediate_view = self
+            .intermediate_texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
         let render_params = vello::RenderParams {
@@ -69,9 +87,167 @@ impl AppRenderer {
         };
 
         self.renderer
-            .render_to_texture(&self.device, &self.queue, &scene, &view, &render_params)
+            .render_to_texture(
+                &self.device,
+                &self.queue,
+                &scene,
+                &intermediate_view,
+                &render_params,
+            )
             .map_err(|e| eyre!("Render error: {:?}", e))?;
 
+        let frame = self
+            .surface
+            .get_current_texture()
+            .wrap_err_with(|| eyre!("unable to get next texture from swapchain"))?;
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Blit Encoder"),
+            });
+
+        let frame_view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let bind_group_layout =
+            self.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("Blit Bind Group Layout"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                            count: None,
+                        },
+                    ],
+                });
+
+        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Blit Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Blit Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&intermediate_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+
+        let shader = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Blit Shader"),
+                source: wgpu::ShaderSource::Wgsl(
+                    r#"
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<f32> {
+    let x = f32((vertex_index & 1u) << 1u);
+    let y = f32((vertex_index & 2u));
+    return vec4<f32>(x * 2.0 - 1.0, y * 2.0 - 1.0, 0.0, 1.0);
+}
+
+@group(0) @binding(0) var src_texture: texture_2d<f32>;
+@group(0) @binding(1) var src_sampler: sampler;
+
+@fragment
+fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let uv = position.xy / vec2<f32>(textureDimensions(src_texture));
+    return textureSample(src_texture, src_sampler, uv);
+}
+"#
+                    .into(),
+                ),
+            });
+
+        let pipeline_layout = self
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Blit Pipeline Layout"),
+                bind_group_layouts: &[&bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+        let pipeline = self
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Blit Pipeline"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: frame.texture.format(),
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
+
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Blit Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &frame_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            render_pass.set_pipeline(&pipeline);
+            render_pass.set_bind_group(0, &bind_group, &[]);
+            render_pass.draw(0..3, 0..1);
+        }
+
+        self.queue.submit(Some(encoder.finish()));
         frame.present();
 
         Ok(())
@@ -106,6 +282,24 @@ async fn start(window: Arc<Window>) -> Result<AppRenderer> {
     surface_config.format = swapchain_format;
     surface.configure(&device, &surface_config);
 
+    let intermediate_format = wgpu::TextureFormat::Rgba8Unorm;
+    let intermediate_texture = device.create_texture(&wgpu::TextureDescriptor {
+        size: wgpu::Extent3d {
+            width: size.width,
+            height: size.height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: intermediate_format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::STORAGE_BINDING
+            | wgpu::TextureUsages::TEXTURE_BINDING,
+        label: Some("Intermediate RGBA Texture"),
+        view_formats: &[],
+    });
+
     let renderer = Renderer::new(
         &device,
         RendererOptions {
@@ -123,6 +317,8 @@ async fn start(window: Arc<Window>) -> Result<AppRenderer> {
         queue: queue,
         surface: surface,
         device: device,
+        intermediate_texture,
+        intermediate_format,
     })
 }
 
