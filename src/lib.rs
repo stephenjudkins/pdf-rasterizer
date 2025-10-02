@@ -154,6 +154,7 @@ pub struct GraphicsState {
     pub text_state: Option<TextState>,
     pub line_width: f32,
     pub current_point: Coord,
+    pub clipping_path: Option<(BezPath, Fill)>,
 }
 
 impl Default for GraphicsState {
@@ -166,6 +167,7 @@ impl Default for GraphicsState {
             text_state: None,
             line_width: 1.,
             current_point: Coord::default(),
+            clipping_path: None,
         }
     }
 }
@@ -303,7 +305,6 @@ pub fn draw_doc(
                         f: f.as_float()?,
                     };
                     ts.matrix = concat(&state.gs.ctm, &tm_params);
-                    eprintln!("{:?}", ts.matrix);
                 }
             }
             ("Tf", [Object::Name(n), size]) => {
@@ -360,6 +361,9 @@ pub fn draw_doc(
                     state.gs.stroke_color.components[3],
                 ]);
             }
+            ("cs", [Object::Name(_name)]) => {}
+            ("CS", [Object::Name(_name)]) => {}
+            ("ri", [Object::Name(_name)]) => {}
             ("m", [x, y]) => {
                 let xy = transform(&state, &x, y)?;
                 state.gs.path.move_to((xy.x as f64, xy.y as f64));
@@ -414,6 +418,15 @@ pub fn draw_doc(
             }
             ("h", []) => {
                 state.gs.path.close_path();
+            }
+            ("W", []) => {
+                state.gs.clipping_path = Some((state.gs.path.clone(), Fill::NonZero));
+            }
+            ("W*", []) => {
+                state.gs.clipping_path = Some((state.gs.path.clone(), Fill::EvenOdd));
+            }
+            ("n", []) => {
+                state.gs.path = BezPath::new();
             }
             ("f" | "f*", []) => {
                 let fill_rule = if o == "f" {
