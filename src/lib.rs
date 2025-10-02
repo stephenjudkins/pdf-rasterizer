@@ -154,8 +154,6 @@ pub struct GraphicsState {
     pub text_state: Option<TextState>,
     pub line_width: f32,
     pub current_point: Coord,
-    pub clipping_path: Option<(BezPath, Fill)>,
-    pub clip_layer_active: bool,
 }
 
 impl Default for GraphicsState {
@@ -168,8 +166,6 @@ impl Default for GraphicsState {
             text_state: None,
             line_width: 1.,
             current_point: Coord::default(),
-            clipping_path: None,
-            clip_layer_active: false,
         }
     }
 }
@@ -291,7 +287,7 @@ pub fn draw_doc(
 
     for op in content.operations {
         let o = op.operator.as_str();
-        eprintln!("op: {:?} {:?}", o, &op.operands[..]);
+        // eprintln!("op: {:?} {:?}", o, &op.operands[..]);
         match (o, &op.operands[..]) {
             ("BT", []) => {
                 state.gs.text_state = Some(TextState::default());
@@ -319,14 +315,25 @@ pub fn draw_doc(
             }
 
             ("TJ", [text]) => {
-                if let Some((ref clip_path, _clip_rule)) = state.gs.clipping_path {
-                    if !state.gs.clip_layer_active {
-                        use kurbo::Affine;
-                        scene.push_layer(peniko::Mix::Clip, 1.0, Affine::IDENTITY, &clip_path);
-                        state.gs.clip_layer_active = true;
-                    }
-                }
                 text::draw_text(&scale, scene, &mut state.gs, text.as_array()?, &settings)?;
+            }
+            ("Tj", [text]) => {
+                text::draw_text(&scale, scene, &mut state.gs, &[text.clone()], &settings);
+            }
+            ("Td", [tx, ty]) => {
+                if let Some(ts) = &mut state.gs.text_state {
+                    let tx_val = tx.as_float()?;
+                    let ty_val = ty.as_float()?;
+                    let translation = CTM {
+                        a: 1.0,
+                        b: 0.0,
+                        c: 0.0,
+                        d: 1.0,
+                        e: tx_val,
+                        f: ty_val,
+                    };
+                    ts.matrix = concat(&ts.matrix, &translation);
+                }
             }
             ("ET", []) => {
                 state.gs.text_state = None;
@@ -348,9 +355,6 @@ pub fn draw_doc(
                 state.stack.push(state.gs.clone());
             }
             ("Q", []) => {
-                if state.gs.clip_layer_active {
-                    scene.pop_layer();
-                }
                 state.gs = state.stack.pop().ok_or_else(|| {
                     eyre!("Popped empty graphics stack: unbalanced q/Q operators")
                 })?;
@@ -406,6 +410,8 @@ pub fn draw_doc(
             ("Do", [Object::Name(_name)]) => {
                 // XObject painting not yet supported (images, forms, etc.)
             }
+            ("BDC", [_, _]) => {}
+            ("EMC", []) => {}
             ("m", [x, y]) => {
                 let xy = transform(&state, &x, y)?;
                 state.gs.path.move_to((xy.x as f64, xy.y as f64));
@@ -417,6 +423,17 @@ pub fn draw_doc(
                 state.gs.current_point = xy;
             }
             ("v", [x2, y2, x3, y3]) => {
+                let xy1 = state.gs.current_point;
+                let xy2 = transform(&state, &x2, &y2)?;
+                let xy3 = transform(&state, &x3, &y3)?;
+                state.gs.path.curve_to(
+                    (xy1.x as f64, xy1.y as f64),
+                    (xy2.x as f64, xy2.y as f64),
+                    (xy3.x as f64, xy3.y as f64),
+                );
+                state.gs.current_point = xy3;
+            }
+            ("y", [x2, y2, x3, y3]) => {
                 let xy1 = state.gs.current_point;
                 let xy2 = transform(&state, &x2, &y2)?;
                 let xy3 = transform(&state, &x3, &y3)?;
@@ -461,26 +478,12 @@ pub fn draw_doc(
             ("h", []) => {
                 state.gs.path.close_path();
             }
-            ("W", []) => {
-                state.gs.clipping_path = Some((state.gs.path.clone(), Fill::NonZero));
-                state.gs.clip_layer_active = false;
-            }
-            ("W*", []) => {
-                state.gs.clipping_path = Some((state.gs.path.clone(), Fill::EvenOdd));
-                state.gs.clip_layer_active = false;
-            }
+            ("W", []) => {}
+            ("W*", []) => {}
             ("n", []) => {
                 state.gs.path = BezPath::new();
             }
             ("f" | "f*", []) => {
-                if let Some((ref clip_path, _clip_rule)) = state.gs.clipping_path {
-                    if !state.gs.clip_layer_active {
-                        use kurbo::Affine;
-                        scene.push_layer(peniko::Mix::Clip, 1.0, Affine::IDENTITY, &clip_path);
-                        state.gs.clip_layer_active = true;
-                    }
-                }
-
                 let fill_rule = if o == "f" {
                     Fill::NonZero
                 } else {
@@ -500,14 +503,6 @@ pub fn draw_doc(
                 state.gs.line_width = lw.as_float()?;
             }
             ("S", []) => {
-                if let Some((ref clip_path, _clip_rule)) = state.gs.clipping_path {
-                    if !state.gs.clip_layer_active {
-                        use kurbo::Affine;
-                        scene.push_layer(peniko::Mix::Clip, 1.0, Affine::IDENTITY, &clip_path);
-                        state.gs.clip_layer_active = true;
-                    }
-                }
-
                 use kurbo::Affine;
                 use peniko::kurbo::Stroke;
                 let stroke = Stroke::new(state.gs.line_width as f64 * scale.scale as f64);
@@ -521,14 +516,6 @@ pub fn draw_doc(
                 state.gs.path = BezPath::new();
             }
             ("B", []) => {
-                if let Some((ref clip_path, _clip_rule)) = state.gs.clipping_path {
-                    if !state.gs.clip_layer_active {
-                        use kurbo::Affine;
-                        scene.push_layer(peniko::Mix::Clip, 1.0, Affine::IDENTITY, &clip_path);
-                        state.gs.clip_layer_active = true;
-                    }
-                }
-
                 use kurbo::Affine;
                 use peniko::kurbo::Stroke;
                 scene.fill(
@@ -564,7 +551,7 @@ pub fn draw_doc(
             }
 
             (_o, _a) => {
-                // eprintln!("op: {:?} {:?}", _o, _a);
+                eprintln!("MISSING: {:?} {:?}", _o, _a);
             }
         }
     }
