@@ -361,9 +361,39 @@ pub fn draw_doc(
                     state.gs.stroke_color.components[3],
                 ]);
             }
+            ("rg", [r, g, b]) => {
+                let next = to_color(r, g, b)?;
+                state.gs.non_stroke_color = Color::new([
+                    next.components[0],
+                    next.components[1],
+                    next.components[2],
+                    state.gs.non_stroke_color.components[3],
+                ]);
+            }
+            ("RG", [r, g, b]) => {
+                let next = to_color(r, g, b)?;
+                state.gs.stroke_color = Color::new([
+                    next.components[0],
+                    next.components[1],
+                    next.components[2],
+                    state.gs.stroke_color.components[3],
+                ]);
+            }
+            ("g", [gray]) => {
+                let g = gray.as_float()?;
+                state.gs.non_stroke_color =
+                    Color::new([g, g, g, state.gs.non_stroke_color.components[3]]);
+            }
+            ("G", [gray]) => {
+                let g = gray.as_float()?;
+                state.gs.stroke_color = Color::new([g, g, g, state.gs.stroke_color.components[3]]);
+            }
             ("cs", [Object::Name(_name)]) => {}
             ("CS", [Object::Name(_name)]) => {}
             ("ri", [Object::Name(_name)]) => {}
+            ("Do", [Object::Name(_name)]) => {
+                // XObject painting not yet supported (images, forms, etc.)
+            }
             ("m", [x, y]) => {
                 let xy = transform(&state, &x, y)?;
                 state.gs.path.move_to((xy.x as f64, xy.y as f64));
