@@ -155,6 +155,7 @@ pub struct GraphicsState {
     pub line_width: f32,
     pub current_point: Coord,
     pub clipping_path: Option<(BezPath, Fill)>,
+    pub clip_layer_active: bool,
 }
 
 impl Default for GraphicsState {
@@ -168,6 +169,7 @@ impl Default for GraphicsState {
             line_width: 1.,
             current_point: Coord::default(),
             clipping_path: None,
+            clip_layer_active: false,
         }
     }
 }
@@ -317,6 +319,13 @@ pub fn draw_doc(
             }
 
             ("TJ", [text]) => {
+                if let Some((ref clip_path, _clip_rule)) = state.gs.clipping_path {
+                    if !state.gs.clip_layer_active {
+                        use kurbo::Affine;
+                        scene.push_layer(peniko::Mix::Clip, 1.0, Affine::IDENTITY, &clip_path);
+                        state.gs.clip_layer_active = true;
+                    }
+                }
                 text::draw_text(&scale, scene, &mut state.gs, text.as_array()?, &settings)?;
             }
             ("ET", []) => {
@@ -339,6 +348,9 @@ pub fn draw_doc(
                 state.stack.push(state.gs.clone());
             }
             ("Q", []) => {
+                if state.gs.clip_layer_active {
+                    scene.pop_layer();
+                }
                 state.gs = state.stack.pop().ok_or_else(|| {
                     eyre!("Popped empty graphics stack: unbalanced q/Q operators")
                 })?;
@@ -451,14 +463,24 @@ pub fn draw_doc(
             }
             ("W", []) => {
                 state.gs.clipping_path = Some((state.gs.path.clone(), Fill::NonZero));
+                state.gs.clip_layer_active = false;
             }
             ("W*", []) => {
                 state.gs.clipping_path = Some((state.gs.path.clone(), Fill::EvenOdd));
+                state.gs.clip_layer_active = false;
             }
             ("n", []) => {
                 state.gs.path = BezPath::new();
             }
             ("f" | "f*", []) => {
+                if let Some((ref clip_path, _clip_rule)) = state.gs.clipping_path {
+                    if !state.gs.clip_layer_active {
+                        use kurbo::Affine;
+                        scene.push_layer(peniko::Mix::Clip, 1.0, Affine::IDENTITY, &clip_path);
+                        state.gs.clip_layer_active = true;
+                    }
+                }
+
                 let fill_rule = if o == "f" {
                     Fill::NonZero
                 } else {
@@ -478,6 +500,14 @@ pub fn draw_doc(
                 state.gs.line_width = lw.as_float()?;
             }
             ("S", []) => {
+                if let Some((ref clip_path, _clip_rule)) = state.gs.clipping_path {
+                    if !state.gs.clip_layer_active {
+                        use kurbo::Affine;
+                        scene.push_layer(peniko::Mix::Clip, 1.0, Affine::IDENTITY, &clip_path);
+                        state.gs.clip_layer_active = true;
+                    }
+                }
+
                 use kurbo::Affine;
                 use peniko::kurbo::Stroke;
                 let stroke = Stroke::new(state.gs.line_width as f64 * scale.scale as f64);
@@ -491,6 +521,14 @@ pub fn draw_doc(
                 state.gs.path = BezPath::new();
             }
             ("B", []) => {
+                if let Some((ref clip_path, _clip_rule)) = state.gs.clipping_path {
+                    if !state.gs.clip_layer_active {
+                        use kurbo::Affine;
+                        scene.push_layer(peniko::Mix::Clip, 1.0, Affine::IDENTITY, &clip_path);
+                        state.gs.clip_layer_active = true;
+                    }
+                }
+
                 use kurbo::Affine;
                 use peniko::kurbo::Stroke;
                 scene.fill(
